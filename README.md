@@ -57,7 +57,7 @@
 - ⚡ **Fast but polite**: several files at once, with one shared speed limit so the site isn't flooded.
 - 💾 **Picks up where it stopped**: cancel, close, come back later; finished files are skipped.
 - 🗂️ **A Library**: every manga you've downloaded, how much of the series you have, and a "new"
-  badge when chapters come out.
+  badge when chapters come out. Search it and sort it by name, last read or new chapters.
 - 📖 **A reader built in**: read your downloads right in Nyanga, and it remembers the page you
   stopped on.
 - 📱 **Send to your phone**: scan a QR code with your phone's camera and save the files straight
@@ -220,7 +220,9 @@ the original strips; use a reader with a continuous-scroll mode for those.
 Press **Add to library** next to a manga's title to keep it here (downloading it adds it too),
 and **Remove from library** to take it off again.
 Each one gets a card with its cover, how much of the series you have (chapters downloaded out
-of all chapters on the sites), and what failed or is still waiting.
+of all chapters on the sites), and what failed or is still waiting. Once you have more than a
+couple, a search box and sort chips (**Recent**, **Last read**, **New chapters**, **A–Z**) sit at the
+top; the sort is remembered.
 
 - **Read** asks which file, then opens it in Nyanga's own reader (CBZ, PDF, EPUB or an image
   folder). It starts where you left off. Turn pages with the arrow keys, the mouse wheel or by

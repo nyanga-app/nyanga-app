@@ -105,6 +105,7 @@ class Settings:
     seen_version: str = ""  # the version last opened, to show What's new once after an update
     sent_to_phone: bool = False  # anything sent to a phone yet (until then it mentions the Windows firewall prompt)
     read_rtl: bool = False  # the reader turns pages right to left, like a printed manga
+    library_sort: str = "recent"  # how the Library orders its cards: a key of LibraryPage.SORTS
 
     @staticmethod
     def path() -> Path:
@@ -3083,6 +3084,10 @@ class LibraryBridge(QObject):
 class LibraryPage(QWidget):
     """Every manga downloaded so far, how complete it is, and buttons to carry on."""
     open_requested = Signal(str, str)  # url, action: "open", "continue" or "retry"
+    SORTS = {"recent": ("Recent", "The manga you downloaded or opened last come first"),
+             "read": ("Last read", "The manga you read last come first"),
+             "new": ("New chapters", "Manga with chapters you haven't got yet come first"),
+             "name": ("A–Z", "By name")}
 
     def __init__(self, settings: Settings, history: History):
         super().__init__(objectName="page")
@@ -3117,6 +3122,33 @@ class LibraryPage(QWidget):
         self.check_lbl = label("", "meta")
         head.addWidget(self.check_lbl)
         self.col.addLayout(head)
+
+        # Search and sort, once there's more than a couple of manga to look through.
+        self.tools = QWidget()
+        tools = QHBoxLayout(self.tools)
+        tools.setContentsMargins(0, 0, 0, 0)
+        tools.setSpacing(8)
+        self.search = QLineEdit(placeholderText="Find a manga in your library ✦", maxLength=200, clearButtonEnabled=True)
+        self.search.setFixedWidth(300)
+        self.search.textChanged.connect(lambda _: self._arrange())
+        tools.addWidget(self.search)
+        tools.addSpacing(8)
+        self.sort_chips: dict[str, QPushButton] = {}
+        group = QButtonGroup(self, exclusive=True)
+        if settings.library_sort not in self.SORTS:
+            settings.library_sort = "recent"
+        for kind, (text, tip) in self.SORTS.items():
+            b = QPushButton(text, objectName="chip", checkable=True, checked=kind == settings.library_sort)
+            b.setToolTip(tip)
+            b.clicked.connect(lambda _=False, kind=kind: self._set_sort(kind))
+            group.addButton(b)
+            tools.addWidget(b)
+            self.sort_chips[kind] = b
+        tools.addStretch(1)
+        self.col.addWidget(self.tools)
+        self.no_match = label("", "hint")
+        self.no_match.hide()
+        self.col.addWidget(self.no_match)
 
         self.empty, el = card()
         erow = QHBoxLayout()
@@ -3155,9 +3187,42 @@ class LibraryPage(QWidget):
         entries = self.history.entries()
         self.empty.setVisible(not entries)
         self.empty_cat.start() if not entries else self.empty_cat.stop()
+        self.tools.setVisible(len(entries) > 2)
         for key, entry in entries:
             self.list.addWidget(self._card(key, entry))
+        self._arrange()
         self._check_for_new(entries)
+
+    def _set_sort(self, kind: str) -> None:
+        self.settings.library_sort = kind
+        self.settings.save()
+        self._arrange()
+
+    def _last_read(self, key: str) -> float:
+        return max((max(r.get("read", 0), r.get("opened", 0)) for r in self.history.reads(key).values()), default=0)
+
+    def _arrange(self) -> None:
+        """Orders the cards by the picked sort and hides the ones the search doesn't match."""
+        entries = dict(self.history.entries())
+        keys = [k for k in entries if k in self.cards]
+        kind = self.settings.library_sort
+        if kind == "name":
+            keys.sort(key=lambda k: entries[k].get("title", "").casefold())
+        elif kind == "read":
+            keys.sort(key=self._last_read, reverse=True)  # stable: never read ones stay most recent first
+        elif kind == "new":
+            keys.sort(key=lambda k: entries[k].get("new_chapters", 0) > 0, reverse=True)
+        needle = core._norm(self.search.text())
+        shown = 0
+        for i, key in enumerate(keys):
+            frame = self.cards[key]["frame"]
+            self.list.removeWidget(frame)
+            self.list.insertWidget(i, frame)
+            match = needle in core._norm(entries[key].get("title", ""))
+            frame.setVisible(match)
+            shown += match
+        self.no_match.setText(f"Nothing in your library called “{self.search.text().strip()}” ✦")
+        self.no_match.setVisible(bool(keys) and not shown)
 
     def _card(self, key: str, entry: dict) -> QFrame:
         frame, layout = card()
@@ -3246,7 +3311,7 @@ class LibraryPage(QWidget):
         Tap(frame, lambda: self.open_requested.emit(url, "open"))
 
         self.cards[key] = {"bar": bar, "meta": meta, "when": when, "badge": badge, "cat": cat, "busy": busy,
-                           "resume": resume}
+                           "resume": resume, "frame": frame}
         self._fill(key)
         return frame
 
