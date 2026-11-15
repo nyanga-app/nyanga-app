@@ -200,8 +200,16 @@ the new one is done).
 Chapters you already have aren't downloaded again. Say you got chapters 1 and 2, then switch
 to 5 chapters per file: the new "Ch. 1-5" file takes the pages of 1 and 2 from the file you
 have and downloads only 3 to 5. The bottom bar counts just those ("3 chapters to download,
-2 from your files"), and so does the size. If an old file doesn't line up with the site any
-more (say a chapter changed), those chapters are downloaded as usual.
+2 from your files"), and so does the size. Files made from another site work too: Nyanga
+finds where each chapter starts in them by its first picture, even when that site's copies had
+an extra page or two. If an old file still doesn't line up (say a chapter changed), those
+chapters are downloaded as usual.
+
+The files you have decide how the list is laid out, even if the site a manga comes from changes
+and splits its volumes differently. If a chapter belongs inside a file you have (say Vol. 04 was
+missing chapter 66, and you got 66 on its own later), that file's row says **Adds ch. 66 ✦**:
+downloading it remakes Vol. 04 with 66 in its place, from the pages already on your computer, and
+the loose file goes to the Recycle Bin.
 
 Webtoons (long vertical strips) are cut into screen-sized pages in EPUB. CBZ and PDF keep
 the original strips; use a reader with a continuous-scroll mode for those.

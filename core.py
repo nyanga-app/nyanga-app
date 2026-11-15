@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import io
 import logging
 import copy
 import dataclasses
@@ -1096,8 +1097,46 @@ def chapter_span(chapters: list[Chapter]) -> str:
     return fmt_num(first) if first == last else f"{fmt_num(first)}-{fmt_num(last)}"
 
 
-def make_groups(chapters: list[Chapter], per_file: int) -> list[Group]:
-    """One group per volume; chapters without a volume are split into files of per_file chapters."""
+def make_groups(chapters: list[Chapter], per_file: int, files: dict[str, set[str]] | None = None) -> list[Group]:
+    """One group per volume; chapters without a volume are split into files of per_file chapters.
+
+    `files` are the files already made (label -> the chapter numbers in it, as fmt_num gives them):
+    they keep their chapters, whatever the sites say now, so a title that moved to a site with other
+    volumes still matches what's on disk. A chapter numbered inside a file's range goes in that file,
+    and so does a smaller file that sits inside a bigger one's range (a chapter one site was missing,
+    downloaded on its own later): remaking the bigger file puts it in its place."""
+    files = {label: [c for c in chapters if fmt_num(c.number) in keys] for label, keys in (files or {}).items()}
+    files = {label: chs for label, chs in files.items() if chs}
+    span = lambda chs: (chs[0].number, chs[-1].number)
+    for small in sorted(files, key=lambda f: len(files[f])):
+        lo, hi = span(files[small])
+        homes = [big for big in files if big != small and len(files[big]) > len(files[small])
+                 and span(files[big])[0] < lo and hi < span(files[big])[1]]
+        if homes:
+            home = min(homes, key=lambda f: span(files[f])[1] - span(files[f])[0])
+            files[home] = sorted(files[home] + files.pop(small), key=lambda c: c.number)
+    taken = {id(c) for chs in files.values() for c in chs}
+    rest = []
+    for ch in chapters:
+        if id(ch) in taken:
+            continue
+        homes = [f for f, chs in files.items() if span(chs)[0] < ch.number < span(chs)[1]]
+        if homes:
+            home = min(homes, key=lambda f: span(files[f])[1] - span(files[f])[0])
+            files[home] = sorted(files[home] + [ch], key=lambda c: c.number)
+        else:
+            rest.append(ch)
+    groups = [Group(label, chs) for label, chs in files.items()]
+    for g in _plain_groups(rest, per_file):
+        same = next((f for f in groups if f.label == g.label), None)  # a volume that has a file already
+        if same:
+            same.chapters = sorted(same.chapters + g.chapters, key=lambda c: c.number)
+        else:
+            groups.append(g)
+    return sorted(groups, key=lambda g: g.chapters[0].number) if files else groups
+
+
+def _plain_groups(chapters: list[Chapter], per_file: int) -> list[Group]:
     by_volume: dict[int, list[Chapter]] = {}
     for ch in chapters:
         by_volume.setdefault(ch.volume, []).append(ch)
@@ -1217,25 +1256,73 @@ def _split_file(site, path: Path, chapters: list[Chapter], cancel) -> dict[float
     the site changed since), nothing is reused and those chapters are downloaded as usual."""
     try:
         pages = pages_of(path)
-        counts = []
+        lists = []  # (site, its page addresses) per chapter
         for ch in chapters:
             if cancel.is_set():
                 raise Cancelled
             src, at_src = site.sources_for(ch)[0]
-            counts.append(len(src.page_urls(at_src)))
+            lists.append((src, src.page_urls(at_src)))
+        counts = [len(urls) for _, urls in lists]
     except Cancelled:
         raise
     except Exception as e:
         log.info("can't reuse %s: %s", path, e)
         return {}
-    if sum(counts) != len(pages):
-        log.info("can't reuse %s: %d pages, the site says %d", path, len(pages), sum(counts))
-        return {}
-    out, at = {}, 0
-    for ch, count in zip(chapters, counts):
-        out[ch.number], at = pages[at:at + count], at + count
+    if sum(counts) == len(pages):
+        starts = [sum(counts[:i]) for i in range(len(counts))]
+    else:  # made from another site, whose copies have the odd extra page (credits, an ad)
+        log.info("%s: %d pages, the site says %d; finding where each chapter starts", path, len(pages), sum(counts))
+        starts = _chapter_starts(pages, chapters, lists, cancel)
+        if starts is None:
+            return {}
+    out = {}
+    for i, ch in enumerate(chapters):
+        out[ch.number] = pages[starts[i]:starts[i + 1] if i + 1 < len(starts) else len(pages)]
     log.info("reusing %d chapters from %s", len(chapters), path)
     return out
+
+
+def _thumb(data: bytes):
+    from PIL import Image, ImageOps
+    with Image.open(io.BytesIO(data)) as im:
+        return ImageOps.grayscale(im).resize((48, 72))
+
+
+def _unlike(a, b) -> float:
+    """How different two thumbnails look, 0 (the same) to 255."""
+    from PIL import ImageChops, ImageStat
+    return ImageStat.Stat(ImageChops.difference(a, b)).mean[0]
+
+
+def _chapter_starts(pages: list[tuple[str, bytes]], chapters: list[Chapter], lists: list[tuple[Site, list[str]]],
+                    cancel, slack: int = 6) -> list[int] | None:
+    """Where each chapter starts in a file's pages, by finding the picture of its first page (from the
+    site) near where the page counts put it. None unless every one is a clear match."""
+    counts = [len(urls) for _, urls in lists]
+    starts, guess = [], 0
+    for i, ch in enumerate(chapters):
+        if cancel.is_set():
+            raise Cancelled
+        if i == 0:
+            starts.append(0)  # the file starts with it, whatever comes first
+            guess = counts[0]
+            continue
+        src, urls = lists[i]
+        try:
+            first = _thumb(src.image(urls[0]))
+            near = range(max(starts[-1] + 1, guess - slack), min(len(pages), guess + slack + 1))
+            scores = sorted((_unlike(first, _thumb(pages[k][1])), k) for k in near)
+        except Cancelled:
+            raise
+        except Exception as e:
+            log.info("can't line up chapter %s: %s", fmt_num(ch.number), e)
+            return None
+        if not scores or scores[0][0] > 30 or (len(scores) > 1 and scores[1][0] - scores[0][0] < 12):
+            log.info("chapter %s has no clear start (%s)", fmt_num(ch.number), scores[:2])
+            return None
+        starts.append(scores[0][1])
+        guess = scores[0][1] + counts[i]
+    return starts
 
 
 # Job states reported to on_status.

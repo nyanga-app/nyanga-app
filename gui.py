@@ -21,7 +21,7 @@ from pathlib import Path
 
 import requests
 import segno
-from PySide6.QtCore import QBuffer, QCoreApplication, QEasingCurve, QEvent, QObject, QPropertyAnimation, QRectF, QSize, Qt, QTimer, QUrl, QVariantAnimation, Signal
+from PySide6.QtCore import QBuffer, QCoreApplication, QEasingCurve, QEvent, QFile, QObject, QPropertyAnimation, QRectF, QSize, Qt, QTimer, QUrl, QVariantAnimation, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QFontMetrics, QGuiApplication, QImage, QLinearGradient, QPainter, QPainterPath, QPalette, QPen, QPixmap, QRegion
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractScrollArea, QAbstractSpinBox, QApplication, QStyledItemDelegate, QButtonGroup, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
@@ -763,6 +763,8 @@ class DownloadPage(QWidget):
         self.run_t0 = 0.0
         self.samples: list[tuple[float, float]] = []  # (time, overall progress) for the time-left estimate
         self.reuse: dict[str, tuple[str, list[core.Chapter]]] = {}  # see _reusable
+        self.fit_files: dict[str, tuple[str, set[str]]] = {}  # see _made_files
+        self.run_reuse: dict[int, set[str]] = {}
         self.got, self.got_samples = 0, []  # bytes downloaded this run, and (time, bytes) for the speed
         self.tick = QTimer(self, interval=1000)
         self.tick.timeout.connect(self._refresh_run_status)
@@ -1541,8 +1543,9 @@ class DownloadPage(QWidget):
             self.fmt.setCurrentIndex(max(0, self.fmt.findData(run["format"])))
         if run.get("per_file") and self.per_file.isVisible():
             self.per_file.setValue(run["per_file"])
-        if run.get("save_to"):
+        if run.get("save_to") and run["save_to"] != self.save_to.text():
             self.save_to.setText(run["save_to"])
+            self._regroup()  # the files already made there decide the layout
         wanted = set(entry.get("failed" if only_failed else "pending", []))
         self._check(lambda i: bool(wanted & set(group_keys(self.groups[i]))))
         if self._checked_rows():
@@ -1578,10 +1581,36 @@ class DownloadPage(QWidget):
 
     # ---- file table
 
+    def _made_files(self) -> dict[str, tuple[str, set[str]]]:
+        """Files of this title already in the folder it saves to: label -> (path, chapters in it). The
+        file list keeps them as they are, so they match what's on disk whichever site is used now."""
+        entry = self.history.get(self.key) or {}
+        folder = Path(self.save_to.text().strip() or self.settings.download_dir) / core.safe_name(self.info.title)
+        prefix = core.safe_name(self.info.title)
+        out: dict[str, tuple[str, set[str]]] = {}
+        for key, path in entry.get("downloaded", {}).items():
+            p = Path(path)
+            stem = p.name if p.is_dir() else p.stem
+            label = stem[len(prefix):].lstrip(" -")
+            if p.parent == folder and stem.startswith(prefix) and label and p.exists() \
+                    and core.safe_name(f"{self.info.title} - {label}") == stem:
+                out.setdefault(label, (path, set()))[1].add(key)
+        return out
+
+    def _to_fit(self, row: int) -> list[str]:
+        """Chapters that belong in this file but aren't in it yet (downloaded on their own, or not at all)."""
+        made = self.fit_files.get(self.groups[row].label)
+        if not made:
+            return []
+        downloaded = (self.history.get(self.key) or {}).get("downloaded", {})
+        return [k for k in group_keys(self.groups[row]) if downloaded.get(k) != made[0]]
+
     def _regroup(self) -> None:
         if not self.info:
             return
-        self.groups = core.make_groups(self.info.chapters, self.per_file.value())
+        self.fit_files = self._made_files()
+        self.groups = core.make_groups(self.info.chapters, self.per_file.value(),
+                                       {label: keys for label, (_, keys) in self.fit_files.items()})
         vols = sum(1 for c in self.info.chapters if c.volume != core.NO_VOLUME)
         sources = self.info.sources or [self.site.name]
         status = f"{self.info.status}  ·  " if self.info.status else ""
@@ -1836,7 +1865,8 @@ class DownloadPage(QWidget):
         self.smart = {"missing": set(), "done": set(), "new": set(), "failed": set()}
         for i, g in enumerate(self.groups):
             keys = group_keys(g)
-            self.smart["done" if all(k in downloaded for k in keys) else "missing"].add(i)
+            done = all(k in downloaded for k in keys) and not self._to_fit(i)
+            self.smart["done" if done else "missing"].add(i)
             if self.new_keys & set(keys):
                 self.smart["new"].add(i)
             if failed & set(keys):
@@ -1883,7 +1913,13 @@ class DownloadPage(QWidget):
             have = sum(k in downloaded for k in keys)
             bar = self._bar(i)
             state = ""
-            if have == len(keys):
+            fit = self._to_fit(i)
+            if fit and len(fit) < len(keys):  # the file is there, a chapter that belongs in it isn't
+                bar.setValue(int((len(keys) - len(fit)) / len(keys) * 1000))
+                bar.setFormat(f"Adds ch. {', '.join(fit[:3])}{'…' if len(fit) > 3 else ''} ✦")
+                bar.setToolTip("Downloading puts these chapters into the file you have, in their place, "
+                               "using the pages already on your computer where it can")
+            elif have == len(keys):
                 bar.setValue(1000)
                 bar.setFormat("Downloaded ✓")
                 state = core.DONE
@@ -2047,6 +2083,9 @@ class DownloadPage(QWidget):
 
         groups = [self.groups[r] for r in rows]
         rebuild = self._incomplete(groups, fmt)
+        # Files whose chapters move into another one; they're put in the bin once it's made.
+        self.run_reuse = {r: {self.reuse[chapter_key(c.number)][0] for c in self.groups[r].chapters
+                              if chapter_key(c.number) in self.reuse} for r in rows}
         groups = [replace(g, reuse={c.number: self.reuse[chapter_key(c.number)] for c in g.chapters
                                     if chapter_key(c.number) in self.reuse}) for g in groups]
 
@@ -2100,10 +2139,19 @@ class DownloadPage(QWidget):
         self.states[row] = state
         if state in (core.DONE, core.SKIPPED):
             self.history.file_done(self.key, group_keys(self.groups[row]), msg, made=state == core.DONE)
+            if state == core.DONE:
+                self._bin_emptied(self.run_reuse.get(row, set()) - {msg})
         elif state == core.FAILED:
             self.history.file_failed(self.key, group_keys(self.groups[row]))
         self.overall.setValue(int(self._overall() * 1000))
         self.progress.emit(self.key, self._overall())
+
+    def _bin_emptied(self, paths: set[str]) -> None:
+        """Files we made whose chapters all went into another file now: off to the bin."""
+        kept = set((self.history.get(self.key) or {}).get("downloaded", {}).values())
+        for path in paths - kept:
+            if Path(path).exists() and QFile.moveToTrash(path):
+                logger.info("moved %s to the bin: its chapters are in another file now", path)
 
     def _overall(self) -> float:
         return sum(self.fractions.values()) / len(self.fractions) if self.fractions else 0.0
