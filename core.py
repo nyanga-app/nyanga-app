@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import logging
 import copy
+import dataclasses
 import os
 import queue
 import re
@@ -29,7 +30,9 @@ NO_VOLUME = 0
 
 
 class SiteError(RuntimeError):
-    pass
+    def __init__(self, message: str, status: int = 0):
+        super().__init__(message)
+        self.status = status  # the HTTP status that caused it, if any (404: the page is gone)
 
 
 class Cancelled(Exception):
@@ -41,6 +44,8 @@ class Chapter:
     number: float
     volume: int  # NO_VOLUME when the site does not say
     url: str
+    source: str = ""  # the site's name, when the title is on several
+    alts: list[Chapter] = field(default_factory=list)  # the same chapter on other sites, tried if this one fails
 
 
 @dataclass
@@ -62,6 +67,9 @@ class MangaInfo:
     genres: list[str] = field(default_factory=list)
     description: str = ""
     rating: float = 0.0  # out of 5; 0 when nobody has rated it yet
+    author: str = ""
+    aliases: list[str] = field(default_factory=list)  # other names it goes by
+    sources: list[str] = field(default_factory=list)  # the sites its chapters come from
 
 
 @dataclass
@@ -92,6 +100,9 @@ class SearchResult:
     genres: list[str] | None = None  # None until fetched from the title's page
     description: str = ""
     rating: float = 0.0
+    site: str = ""  # name of the site `url` and `cover_url` are on
+    aliases: list[str] = field(default_factory=list)
+    urls: list[str] = field(default_factory=list)  # its pages on every site that has it
 
 
 class RateLimiter:
@@ -166,7 +177,7 @@ class Site:
 
     def _get(self, url: str, referer: str | None = None, retries: int = 3,
              method: str = "GET") -> requests.Response:
-        last = "unknown error"
+        last, status = "unknown error", 0
         headers = {"Referer": self.referer if referer is None else referer}
         for attempt in range(retries):
             self.limiter.wait()
@@ -177,7 +188,7 @@ class Site:
                 log.debug("%s %s -> %s (%d bytes)", method, url, resp.status_code, len(resp.content))
                 if resp.status_code == 200:
                     return resp
-                last = f"HTTP {resp.status_code}"
+                last, status = f"HTTP {resp.status_code}", resp.status_code
                 if resp.status_code in (403, 404):
                     break
                 if resp.status_code == 429:  # too many requests: wait as long as the site asks
@@ -186,11 +197,11 @@ class Site:
                         wait = int(wait)
                         time.sleep(min(60.0, max(0.0, wait - time.time() if wait > 10**9 else wait)))
             except requests.RequestException as e:
-                last = type(e).__name__
+                last, status = type(e).__name__, 0
                 log.debug("%s %s failed: %r", method, url, e)
             log.info("try %d of %d for %s: %s", attempt + 1, retries, url, last)
         log.warning("giving up on %s: %s", url, last)
-        raise SiteError(f"Could not fetch {url}: {last}")
+        raise SiteError(f"Could not fetch {url}: {last}", status)
 
     def cover(self, url: str) -> bytes | None:
         try:
@@ -210,6 +221,10 @@ class Site:
             raise SiteError(f"Not an image: {url}")
         return resp.content
 
+    def sources_for(self, chapter: Chapter) -> list[tuple[Site, Chapter]]:
+        """Where a chapter can be downloaded from, best first."""
+        return [(self, chapter)]
+
 
 class FanFox(Site):
     name = "fanfox.net"
@@ -221,6 +236,7 @@ class FanFox(Site):
     _genres_re = re.compile(r'<p class="detail-info-right-tag-list">(.*?)</p>', re.S)
     _desc_res = [re.compile(rf'<p [^>]*class="{c}">(.*?)</p>', re.S) for c in ("fullcontent", "detail-info-right-content")]
     _score_re = re.compile(r'<span class="item-score">\s*([\d.]+)\s*<')
+    _author_re = re.compile(r'<p class="detail-info-right-say">(.*?)</p>', re.S)
     _cover_re = re.compile(r'<img class="detail-info-cover-img" src="([^"]+)"')
     _image_re = re.compile(r'data-original="([^"]+)"')
     _result_re = re.compile(r'<li>\s*<a href="/manga/([a-z0-9_]+)/"[^>]*><img class="manga-list-4-cover" '
@@ -271,6 +287,7 @@ class FanFox(Site):
         genres = self._genres_re.search(page)
         desc = next(filter(None, (r.search(page) for r in self._desc_res)), None)  # the full one if it's there
         score = self._score_re.search(page)
+        author = self._author_re.search(page)
         info = MangaInfo(
             title=html.unescape(title.group(1)).strip() if title else self.slug.replace("_", " ").title(),
             chapters=sorted(found.values(), key=lambda c: (c.number, c.url)),
@@ -278,6 +295,8 @@ class FanFox(Site):
             genres=[html.unescape(g) for g in re.findall(r'title="([^"]+)"', genres.group(1))] if genres else [],
             description=_plain(desc.group(1)) if desc else "",
             rating=float(score.group(1)) if score else 0.0,
+            author=", ".join(html.unescape(a).strip() for a in re.findall(r'title="([^"]+)"', author.group(1))
+                             if a.strip() != "[Add]") if author else "",
         )
         cover = self._cover_re.search(page) if with_cover else None
         if cover:
@@ -318,6 +337,7 @@ class FanFox(Site):
                 status=status.group(1).strip() if status else "",
                 latest=html.unescape(latest.group(1)).strip() if latest else "",
                 author=html.unescape(author.group(1)).strip() if author else "",
+                site=cls.name,
             ))
         # The site's own order puts spin-offs before the title itself; exact and prefix matches go first.
         if page_no == 1 and query.strip() and "sort" not in params:
@@ -406,6 +426,15 @@ class MangaDex(Site):
             if art else ""
 
     @staticmethod
+    def _authors(manga: dict) -> str:
+        return ", ".join(r["attributes"]["name"] for r in manga["relationships"]
+                         if r["type"] == "author" and "attributes" in r)
+
+    @staticmethod
+    def _aliases(attrs: dict) -> list[str]:
+        return [t for names in [attrs["title"], *attrs.get("altTitles", [])] for t in names.values()]
+
+    @staticmethod
     def _plain_desc(text: str) -> str:
         text = text.split("\n---")[0]  # the rest is usually links to other sites
         text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)  # markdown links
@@ -420,7 +449,7 @@ class MangaDex(Site):
         return {i: round((s.get("rating", {}).get("bayesian") or 0) / 2, 2) for i, s in stats.items()}
 
     def info(self, with_cover: bool = True) -> MangaInfo:
-        manga = self._json(f"/manga/{self.slug}", {"includes[]": ["cover_art"]})["data"]
+        manga = self._json(f"/manga/{self.slug}", {"includes[]": ["cover_art", "author"]})["data"]
         attrs = manga["attributes"]
         info = MangaInfo(
             title=self._title(attrs),
@@ -430,10 +459,12 @@ class MangaDex(Site):
                     if t["attributes"]["group"] in ("genre", "theme")],
             description=self._plain_desc(self._pick(attrs.get("description") or {})),
             rating=self._scores([self.slug]).get(self.slug, 0.0),
+            author=self._authors(manga),
+            aliases=self._aliases(attrs),
         )
         if not info.chapters:
             raise SiteError(f"MangaDex has no English chapters of {info.title} to download: big licensed "
-                            "titles often only link to the publisher's own site. Try fanfox.net ✦")
+                            "titles often only link to the publisher's own site ✦", 404)
         if with_cover and (url := self._cover_url(manga, 512)):
             info.cover = self.cover(url)
         return info
@@ -503,12 +534,13 @@ class MangaDex(Site):
                 cover_url=site._cover_url(m, 256),
                 status=cls._statuses.get(attrs.get("status") or "", ""),
                 latest=f"Ch. {last}" if last else "",
-                author=", ".join(r["attributes"]["name"] for r in m["relationships"]
-                                 if r["type"] == "author" and "attributes" in r),
+                author=site._authors(m),
                 genres=[site._pick(t["attributes"]["name"]) for t in attrs.get("tags", [])
                         if t["attributes"]["group"] in ("genre", "theme")],
                 description=cls._plain_desc(site._pick(attrs.get("description") or {})),
                 rating=scores.get(m["id"], 0.0),
+                site=cls.name,
+                aliases=site._aliases(attrs),
             ))
         if filters and filters.rating:  # the API can't filter by rating, so this page is just thinned out
             results = [r for r in results if r.rating >= filters.rating]
@@ -537,6 +569,270 @@ def site_for(url: str):
 def site_named(name: str):
     """The site with this name, or the first one if it is unknown (e.g. removed since it was saved)."""
     return next((s for s in SITES if s.name == name), SITES[0])
+
+
+def key_for(url: str) -> str:
+    """The history key of a title page, e.g. "fanfox.net:solo_leveling", or "" for an unknown link."""
+    site_cls = site_for(url)
+    return f"{site_cls.name}:{site_cls.url_re.search(url).group(1).lower()}" if site_cls else ""
+
+
+def _names(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def _norm(title: str) -> str:
+    """A title squeezed down for comparing between sites: "The Boy & the Beast!" -> "boyandthebeast"."""
+    t = re.sub(r"^the\s+", "", title.lower().replace("&", " and ").replace("’", "'").strip())
+    return re.sub(r"[\W_]+", "", t)
+
+
+def _same_author(a: str, b: str) -> bool:
+    """Lenient, since sites spell names differently (Jang Sung-Lak, Jang Sung-Rak) and some only list
+    the artist: true when unknown. Only used to choose between titles with the same name."""
+    words = lambda s: {w for w in re.split(r"[\W_]+", s.lower()) if len(w) > 1}
+    x, y = words(a), words(b)
+    return not x or not y or any(p[:4] == q[:4] for p in x for q in y)
+
+
+def _latest(text: str) -> float:
+    nums = re.findall(r"\d+(?:\.\d+)?", text)
+    return float(nums[-1]) if nums else -1.0
+
+
+def _parallel(jobs: list[Callable[[], object]]) -> list[object]:
+    """Run each job on its own thread; a job's result, or the exception it raised."""
+    def safe(job):
+        try:
+            return job()
+        except Exception as e:  # handed back so one site failing doesn't stop the others
+            return e
+    if len(jobs) == 1:
+        return [safe(jobs[0])]
+    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+        return list(pool.map(safe, jobs))
+
+
+class AllSites:
+    """Searches every site at once and puts the same title from different sites together, so
+    nobody has to pick a site. Looks like a site class to the search box and filters."""
+    name = _names([s.name for s in SITES])
+    genres = list(dict.fromkeys(g for s in SITES for g in getattr(s, "genres", [])))
+    kinds = list(dict.fromkeys(k for s in SITES for k in getattr(s, "kinds", [])))
+    sorts = list(dict.fromkeys(o for s in SITES for o in getattr(s, "sorts", [])))
+
+    @staticmethod
+    def able(site_cls, filters: SearchFilters | None, sort: str) -> bool:
+        """Whether a site can answer this search properly: it knows the order and every wanted genre and kind."""
+        if sort and sort not in getattr(site_cls, "sorts", []):
+            return False
+        if not filters:
+            return True
+        return set(filters.genres) <= set(getattr(site_cls, "genres", [])) and \
+            (not filters.kind or filters.kind in getattr(site_cls, "kinds", []))
+
+    @classmethod
+    def search(cls, query: str, limiter: RateLimiter, page_no: int = 1,
+               filters: SearchFilters | None = None, sort: str = "") -> tuple[list[SearchResult], int]:
+        sites = [s for s in SITES if cls.able(s, filters, sort)]
+        if not sites:
+            return [], page_no
+        answers = _parallel([lambda s=s: s.search(query, limiter, page_no, filters, sort) if filters
+                             else s.search(query, limiter, page_no, sort=sort) for s in sites])
+        good = [a for a in answers if not isinstance(a, Exception)]
+        for site_cls, a in zip(sites, answers):
+            if isinstance(a, Exception):
+                log.warning("search on %s failed: %s", site_cls.name, a)
+        if not good:
+            raise answers[0]
+        merged: list[SearchResult] = []
+        by_name: dict[str, SearchResult] = {}
+        # Take turns between the sites, so the best matches from each come first.
+        for rank in range(max(len(results) for results, _ in good)):
+            for results, _ in good:
+                if rank >= len(results):
+                    continue
+                r = results[rank]
+                names = {_norm(n) for n in [r.title, *r.aliases]} - {""}
+                same = next((by_name[n] for n in names if n in by_name), None)
+                if same and r.site not in {site_for(u).name for u in same.urls}:
+                    cls._join(same, r)
+                    continue
+                r = copy.copy(r)
+                r.urls = [r.url]
+                merged.append(r)
+                for n in names:
+                    by_name.setdefault(n, r)
+        if sort == "A to Z":
+            merged.sort(key=lambda r: r.title.lower())
+        elif page_no == 1 and query.strip() and not sort:
+            wanted = _norm(query)
+            merged.sort(key=lambda r: (wanted not in {_norm(n) for n in [r.title, *r.aliases]},
+                                       not _norm(r.title).startswith(wanted)))
+        return merged, max(pages for _, pages in good)
+
+    @staticmethod
+    def _join(into: SearchResult, other: SearchResult) -> None:
+        """Fold another site's copy of a title into the result already showing."""
+        into.urls.append(other.url)
+        into.aliases = list(dict.fromkeys(into.aliases + [other.title] + other.aliases))
+        if not into.cover_url and other.cover_url:
+            into.cover_url, into.site = other.cover_url, other.site
+            into.url, into.urls = other.url, [other.url] + into.urls[:-1]  # the cover's site goes first
+        if _latest(other.latest) > _latest(into.latest):
+            into.latest = other.latest
+        if into.genres is None and other.genres is not None:
+            into.genres = other.genres
+        into.status = into.status or other.status
+        into.author = into.author or other.author
+        into.description = into.description or other.description
+        into.rating = into.rating or other.rating
+
+
+class Multi:
+    """One title on one or more sites, acting as one site: each chapter comes from the best site
+    that has it, and the others step in when that one fails."""
+
+    def __init__(self, sites: list[Site], key: str = ""):
+        self.sites = sites  # best first
+        self.limiter = sites[0].limiter
+        by_order = sorted(sites, key=lambda s: SITES.index(type(s)))
+        self.key = key or by_order[0].key
+        self.title_url = by_order[0].title_url
+        self.sources: dict[str, str] = {s.name: s.title_url for s in by_order}  # site name -> title page
+        self.missing: list[str] = []  # sites searched that don't have it
+
+    def with_limiter(self, limiter):
+        clone = copy.copy(self)
+        clone.sites = [s.with_limiter(limiter) for s in self.sites]
+        clone.limiter = limiter
+        return clone
+
+    @property
+    def name(self) -> str:
+        return _names([s.name for s in self.sites])
+
+    def _site(self, name: str) -> Site:
+        return next((s for s in self.sites if s.name == name), self.sites[0])
+
+    def sources_for(self, chapter: Chapter) -> list[tuple[Site, Chapter]]:
+        return [(self._site(c.source), c) for c in [chapter, *chapter.alts]]
+
+    def page_urls(self, chapter: Chapter) -> list[str]:
+        return self._site(chapter.source).page_urls(chapter)
+
+    def image(self, url: str) -> bytes:  # only for code that doesn't know about sources
+        return self.sites[0].image(url)
+
+    def image_size(self, url: str) -> int | None:
+        return self.sites[0].image_size(url)
+
+
+def _best_match(site_cls, queries: list[str], author: str, limiter: RateLimiter) -> str:
+    """The page of the title going by one of these names on a site, from its first page of search results."""
+    names = {_norm(q) for q in queries}
+    for query in queries[:3]:
+        results, _ = site_cls.search(query, limiter)
+        same = [r for r in results if names & {_norm(n) for n in [r.title, *r.aliases]}]
+        if same:
+            return next((r for r in same if _same_author(author, r.author)), same[0]).url
+    return ""
+
+
+def open_title(urls: list[str], limiter: RateLimiter, title: str = "", key: str = "",
+               look_on: list[str] | None = None, with_cover: bool = True,
+               names: list[str] = ()) -> tuple[Multi, MangaInfo]:
+    """Read a title from every site we know it on and put the chapter lists together.
+
+    `urls` are its known pages (at most one per site); `title` its name as it was saved, kept so
+    file names don't change; `look_on` the sites to search by name for it (None: all the others),
+    by the names the sites give it plus `names` (e.g. from a search result).
+    A site whose page has gone (404) is searched again. The returned Multi has `sources`
+    (where it is now) and `missing` (sites searched that don't have it)."""
+    known = {}
+    for url in urls:
+        site_cls = site_for(url)
+        if site_cls and site_cls.name not in known:
+            known[site_cls.name] = site_cls(url, limiter)
+    look = [s.name for s in SITES if s.name not in known] if look_on is None else list(look_on)
+
+    def read(site: Site) -> MangaInfo:
+        info = site.info(with_cover)
+        if not info.chapters:  # fanfox answers a page that's gone with an empty one
+            raise SiteError(f"No chapters found on {site.name} ✦", 404)
+        return info
+
+    found: dict[str, tuple[Site, MangaInfo]] = {}
+    errors: list[Exception] = []
+    for site, got in zip(known.values(), _parallel([lambda s=s: read(s) for s in known.values()])):
+        if isinstance(got, Exception):
+            log.info("%s failed for %s: %s", site.name, site.title_url, got)
+            errors.append(got)
+            if getattr(got, "status", 0) == 404 and site.name not in look:
+                look.append(site.name)  # moved or taken down there: look for it again
+        else:
+            found[site.name] = (site, got)
+    titles = [i.title for _, i in found.values()] + [title, *names] + [a for _, i in found.values() for a in i.aliases]
+    queries = list({_norm(t): t.strip() for t in reversed(titles) if t.strip().isascii() and _norm(t)}.values())[::-1]
+    author = next((info.author for _, info in found.values() if info.author), "")
+    look = [n for n in look if n not in found]
+    missing = []
+    if look and queries:
+        def search(site_cls) -> tuple[Site, MangaInfo] | None:
+            url = _best_match(site_cls, queries, author, limiter)
+            if not url or (site_cls.name in known and known[site_cls.name].key == key_for(url)):
+                return None  # not there, or only the page that just failed
+            site = site_cls(url, limiter)
+            return site, read(site)
+        clss = [site_named(n) for n in look]
+        for site_cls, got in zip(clss, _parallel([lambda c=c: search(c) for c in clss])):
+            if isinstance(got, Exception) and getattr(got, "status", 0) != 404:
+                log.info("looking for %s on %s failed: %s", queries[0], site_cls.name, got)  # try again later
+            elif got and not isinstance(got, Exception):
+                log.info("found %s on %s: %s", queries[0], site_cls.name, got[0].title_url)
+                found[site_cls.name] = got
+            else:
+                missing.append(site_cls.name)
+    if not found:
+        raise errors[0] if errors else SiteError("Couldn't find that title anywhere ✦")
+
+    # Best first: the newest chapter, then the most chapters, then the usual site order.
+    ranked = sorted(found.values(), key=lambda si: (-max(c.number for c in si[1].chapters) if si[1].chapters else 0,
+                                                    -len(si[1].chapters), SITES.index(type(si[0]))))
+    # Matched by number, and by how many times it came before: some titles start over each season.
+    chapters: dict[tuple[float, int], list[Chapter]] = {}
+    for site, info in ranked:
+        seen: dict[float, int] = {}
+        for c in info.chapters:
+            seen[c.number] = seen.get(c.number, -1) + 1
+            chapters.setdefault((c.number, seen[c.number]), []).append(dataclasses.replace(c, source=site.name, alts=[]))
+    merged = []
+    for at in sorted(chapters):
+        best, *alts = chapters[at]
+        volume = best.volume if best.volume != NO_VOLUME else next(
+            (c.volume for c in alts if c.volume != NO_VOLUME), NO_VOLUME)
+        merged.append(dataclasses.replace(best, volume=volume, alts=alts))
+
+    in_order = [info for _, info in sorted(found.values(), key=lambda si: SITES.index(type(si[0])))]
+    first = lambda attr: next((getattr(i, attr) for i in in_order if getattr(i, attr)), None)
+    info = MangaInfo(
+        title=title or in_order[0].title,  # the site order, not the ranking, so it doesn't flip between runs
+        chapters=merged,
+        cover=first("cover"),
+        status=first("status") or "",
+        genres=first("genres") or [],
+        description=first("description") or "",
+        rating=first("rating") or 0.0,
+        author=author,
+        aliases=list(dict.fromkeys(n for i in in_order for n in [i.title, *i.aliases])),
+        sources=[s.name for s, _ in ranked],
+    )
+    multi = Multi([s for s, _ in ranked], key)
+    multi.missing = missing
+    for name, site in known.items():  # couldn't be reached just now: keep it for next time
+        if name not in found and name not in missing:
+            multi.sources[name] = site.title_url
+    return multi, info
 
 
 # --------------------------------------------------------------------------- planning
@@ -583,10 +879,11 @@ def estimate_chapter_bytes(site, chapters: list[Chapter], samples: int = 3, per_
     totals = []
     for i in picks:
         try:
-            urls = site.page_urls(chapters[i])
+            src, ch = site.sources_for(chapters[i])[0]
+            urls = src.page_urls(ch)
             spread = sorted({round(k * (len(urls) - 1) / max(1, per_chapter - 1))
                              for k in range(min(per_chapter, len(urls)))})
-            sizes = [n for n in (site.image_size(urls[k]) for k in spread) if n]
+            sizes = [n for n in (src.image_size(urls[k]) for k in spread) if n]
         except SiteError:
             continue
         if sizes:
@@ -634,20 +931,42 @@ def download_group(site, group: Group, group_dir: Path, cancel: threading.Event,
                 (ch_dir / ".done").touch()
                 on_progress((done + 1) / n, f"Ch. {fmt_num(ch.number)}  ·  from your file", 0)
                 continue
-        urls = site.page_urls(ch)
-        for i, url in enumerate(urls, 1):
-            if cancel.is_set():
-                raise Cancelled
-            got = 0
-            if not list(ch_dir.glob(f"{i:04d}.*")):
-                data = site.image(url)
-                (ch_dir / f"{i:04d}{image_ext(data)}").write_bytes(data)
-                got = len(data)
-            on_progress((done + i / len(urls)) / n, f"Ch. {fmt_num(ch.number)}  ·  page {i}/{len(urls)}", got)
+        sources = site.sources_for(ch)
+        for tried, (src, at_src) in enumerate(sources):
+            mark = ch_dir / ".from"
+            if not mark.exists() or mark.read_text() != src.name:  # pages differ between sites
+                for page in ch_dir.glob("*"):
+                    page.unlink()
+                mark.write_text(src.name)
+            try:
+                _download_chapter(src, at_src, ch_dir, cancel,
+                                  lambda i, total, got: on_progress((done + i / total) / n,
+                                                                    f"Ch. {fmt_num(ch.number)}  ·  page {i}/{total}", got))
+                break
+            except Cancelled:
+                raise
+            except Exception as e:
+                if tried + 1 == len(sources):
+                    raise
+                log.warning("chapter %s failed on %s (%s), trying %s", fmt_num(ch.number), src.name, e,
+                            sources[tried + 1][0].name)
         (ch_dir / ".done").touch()
     # Only this group's chapters: the folder can hold others left over from an earlier attempt.
     dirs = [group_dir / f"ch_{ch.number:08.2f}" for ch in group.chapters]
-    return sorted(p for d in dirs for p in d.glob("*") if p.name != ".done" and ".conv." not in p.name)
+    return sorted(p for d in dirs for p in d.glob("*") if not p.name.startswith(".") and ".conv." not in p.name)
+
+
+def _download_chapter(site, chapter: Chapter, ch_dir: Path, cancel, on_page: Callable[[int, int, int], None]) -> None:
+    urls = site.page_urls(chapter)
+    for i, url in enumerate(urls, 1):
+        if cancel.is_set():
+            raise Cancelled
+        got = 0
+        if not list(ch_dir.glob(f"{i:04d}.*")):
+            data = site.image(url)
+            (ch_dir / f"{i:04d}{image_ext(data)}").write_bytes(data)
+            got = len(data)
+        on_page(i, len(urls), got)
 
 
 def _split_file(site, path: Path, chapters: list[Chapter], cancel) -> dict[float, list[tuple[str, bytes]]]:
@@ -660,7 +979,8 @@ def _split_file(site, path: Path, chapters: list[Chapter], cancel) -> dict[float
         for ch in chapters:
             if cancel.is_set():
                 raise Cancelled
-            counts.append(len(site.page_urls(ch)))
+            src, at_src = site.sources_for(ch)[0]
+            counts.append(len(src.page_urls(at_src)))
     except Cancelled:
         raise
     except Exception as e:

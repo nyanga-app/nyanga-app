@@ -13,10 +13,12 @@ import re
 import time
 from pathlib import Path
 
+import core
 import paths
 
 LIBRARY = paths.DATA / "library"
 log = logging.getLogger(__name__)
+RETRY_SEARCH = 24 * 3600  # how long to wait before looking for a title again on a site that didn't have it
 
 
 def chapter_key(number: float) -> str:
@@ -56,6 +58,24 @@ class History:
 
     def get(self, key: str) -> dict | None:
         return self.data.get(key)
+
+    def sources(self, key: str | None) -> list[str]:
+        """A title's pages on every site it was found on (older entries only know the one they were added from)."""
+        entry = self.data.get(key or "", {})
+        return list(dict.fromkeys([*entry.get("sources", {}).values(), *([entry["url"]] if entry.get("url") else [])]))
+
+    def find(self, urls: list[str]) -> str | None:
+        """The key of the entry for the title behind any of these pages, whichever site it was first added from."""
+        wanted = [k for k in map(core.key_for, urls) if k]
+        exact = next((k for k in wanted if k in self.data), None)  # its own entry first
+        return exact or next((key for key in self.data if set(wanted) & set(map(core.key_for, self.sources(key)))), None)
+
+    def look_on(self, key: str) -> list[str]:
+        """The sites worth searching for a title: those it isn't known on, unless they lacked it not long ago."""
+        entry = self.data.get(key, {})
+        have = {core.site_for(u).name for u in self.sources(key) if core.site_for(u)}
+        recent = {n for n, t in entry.get("not_on", {}).items() if time.time() - t < RETRY_SEARCH}
+        return [s.name for s in core.SITES if s.name not in have | recent]
 
     def cover_path(self, key: str) -> Path:
         return self.folder / "covers" / (re.sub(r"[^a-z0-9_.-]+", "_", key.lower()) + ".img")
@@ -106,6 +126,17 @@ class History:
             path.write_bytes(cover)
         self.save()
         return entry
+
+    def set_sources(self, key: str, found: dict[str, str], missing: list[str]) -> None:
+        """Where a title is now (site name -> its page) and the sites just searched that don't have it."""
+        entry = self.data[key]
+        entry["sources"] = dict(found)
+        if found:
+            entry["url"] = next(iter(found.values()))  # still read by older versions
+        not_on = {n: t for n, t in entry.get("not_on", {}).items() if n not in found}
+        not_on.update({n: time.time() for n in missing})
+        entry["not_on"] = not_on
+        self.save()
 
     def mark_seen(self, key: str, chapters: list[str]) -> None:
         """The user has now seen these chapters, so they no longer count as new."""

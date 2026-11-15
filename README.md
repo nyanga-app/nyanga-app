@@ -48,6 +48,10 @@
 - 🎀 **Filters**: narrow a search down by genre (ones you want, ones you don't), kind (manga,
   manhwa, manhua…), ongoing or finished, and rating. Leave the name empty to browse everything
   that fits.
+- 🧭 **No picking sites**: every search asks all the sites at once, and a manga's chapters come
+  from whichever has them: the newest chapters from one, the ones it's missing from another. If a
+  chapter won't download from one site, it's fetched from the next, and if a manga in your Library
+  moves or disappears from a site, Nyanga finds it again elsewhere.
 - 📚 **Volumes, not a pile of pages**: one CBZ, PDF or EPUB per volume, or per *N* chapters when the
   site has no volume numbers. Webtoon strips are cut into pages for EPUB.
 - ⚡ **Fast but polite**: several files at once, with one shared speed limit so the site isn't flooded.
@@ -63,7 +67,7 @@
 
 Supported sites: **fanfox.net** (`https://fanfox.net/manga/<title>/`) and **mangadex.org**
 (`https://mangadex.org/title/<id>`, English fan translations; big licensed series there often only
-link to the publisher's own site, so fanfox.net is the place for those)
+link to the publisher's own site, and then their chapters come from fanfox.net)
 
 ## 🐾 Meet the cats
 
@@ -159,12 +163,13 @@ closed, that spot shows the delivery cat and how far along it is:
 
 **Download page**
 
-1. Pick a source, type the manga's name and press **Search**. **Filters** opens genres (tap once
+1. Type the manga's name and press **Search** (it looks on every supported site; the same manga
+   from two sites shows once). **Filters** opens genres (tap once
    for ones you want, twice to leave them out), kind, ongoing or finished, and rating; with filters
    on, the name can stay empty to browse. Click the right one in the
    results (use ‹ › under them for more, and the buttons next to **Pick one** to switch between a
    list and a grid of covers, pick their size, or sort them); its cover, title, genres, description
-   (**Read more** for all of it) and chapter count appear.
+   (**Read more** for all of it), chapter count and the sites its chapters come from appear.
    **Back to results** lets you pick another. Pasting a title link instead of a name works too.
 2. Pick the format, the folder to save to and, if the site has no volume numbers for the
    title, how many chapters go in each file.
@@ -204,7 +209,7 @@ the original strips; use a reader with a continuous-scroll mode for those.
 Press **Add to library** next to a manga's title to keep it here (downloading it adds it too),
 and **Remove from library** to take it off again.
 Each one gets a card with its cover, how much of the series you have (chapters downloaded out
-of all chapters on the site), and what failed or is still waiting.
+of all chapters on the sites), and what failed or is still waiting.
 
 - **Read** asks which file, then opens it in Nyanga's own reader (CBZ, PDF, EPUB or an image
   folder). It starts where you left off. Turn pages with the arrow keys, the mouse wheel or by
@@ -256,8 +261,7 @@ computer need to be on the same Wi‑Fi; nothing goes through the internet.
 
 It's split into tabs, and a tab with unsaved changes gets a little ✦.
 
-- **Downloads**: the site the Download page searches first, the download folder, the format and
-  chapters per file.
+- **Downloads**: the download folder, the format and chapters per file.
 - **Look & reading**: theme (light, dark, or match your system; the moon/sun button in the
   sidebar switches too), how many files the Download page lists at once, and which way the
   reader turns pages.
@@ -324,7 +328,8 @@ Nyanga closes. Downloaded manga still go to your download folder.
 - To add a site, write a class like `FanFox` or `MangaDex` in `core.py` (subclass `Site` for the shared
   HTTP session, retries and image fetching) with `name`, `home`, `url_re`, `search()`, `info()`,
   `page_urls()` and `image()`, and add it to `SITES`. For filters, give it `genres` and `kinds`
-  lists and let `search()` take a `SearchFilters`; a `sorts` list and a `sort` argument add sorting; `about()` adds ratings and genres to its search results. It then shows up as a source to search.
+  lists and let `search()` take a `SearchFilters`; a `sorts` list and a `sort` argument add sorting; `about()` adds ratings and genres to its search results. Searches then include it, and its
+  chapters are mixed in with the other sites' (`AllSites` and `open_title()`).
 - Commit messages are [conventional commits](https://www.conventionalcommits.org) (`fix:`,
   `feat:`, `docs:`...). They decide the next version and become the release notes; the subject and body also show
   up in the app's What's new window, so write them for someone who's never seen the code.

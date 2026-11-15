@@ -99,7 +99,6 @@ class Settings:
     chapters_per_file: int = 10
     keep_temp: bool = False
     theme: str = theme.SYSTEM
-    default_source: str = core.SITES[0].name
     files_per_page: int = 20
     results_grid: bool = False  # search results as a grid of covers instead of a list
     results_size: int = 1  # index into ResultItem.SIZES
@@ -545,7 +544,7 @@ class FilterPanel(QFrame):
         self.grid.setSpacing(6)
         col.addLayout(self.grid)
         self.genres: dict[str, QPushButton] = {}
-        self.set_site(core.SITES[0])
+        self.set_site(core.AllSites)
 
     def set_site(self, site_cls) -> None:
         """Offer what this site can filter by; filters it doesn't have are dropped."""
@@ -566,10 +565,6 @@ class FilterPanel(QFrame):
             self.grid.addWidget(btn, i // 6, i % 6)
         self.blockSignals(False)
         self.changed.emit()
-
-    @staticmethod
-    def supports(site_cls) -> bool:
-        return bool(getattr(site_cls, "genres", None))
 
     def _cycle(self, btn: QPushButton) -> None:
         state = self.STATES[(self.STATES.index(btn.property("state")) + 1) % len(self.STATES)]
@@ -798,19 +793,12 @@ class DownloadPage(QWidget):
         # find
         find, fl = card()
         row = QHBoxLayout()
-        self.source = combo_box()
-        for site in core.SITES:
-            self.source.addItem(site.name, site.name)
-        self.source.setCurrentIndex(max(0, self.source.findData(settings.default_source)))
-        self.source.setToolTip("Where to search")
-        self.source.currentIndexChanged.connect(self._source_changed)
         self.query = QLineEdit(placeholderText="Type a manga name, like One Piece ✦", maxLength=200)
         self.query.returnPressed.connect(self._find)
         self.fetch_btn = set_icon(QPushButton(" Search", objectName="primary"), "search", "white")
         self.fetch_btn.clicked.connect(self._find)
         self.filter_btn = set_icon(QPushButton(" Filters", checkable=True), "filter")
         self.filter_btn.setToolTip("Narrow the search down by genre, kind, status or rating")
-        row.addWidget(self.source)
         row.addWidget(self.query, 1)
         row.addWidget(self.filter_btn)
         row.addWidget(self.fetch_btn)
@@ -829,7 +817,6 @@ class DownloadPage(QWidget):
         hint_row.addWidget(self.find_hint, 1)
         fl.addLayout(hint_row)
         col.addWidget(find)
-        self._source_changed()
 
         # search results
         self.results_card, rl = card()
@@ -1132,14 +1119,6 @@ class DownloadPage(QWidget):
         self.lookup_card.show()
         self.lookup_cat.start()
 
-    def _source_changed(self) -> None:
-        site_cls = core.site_named(self.source.currentData())
-        self.filters.set_site(site_cls)
-        self.filter_btn.setVisible(FilterPanel.supports(site_cls))
-        if not FilterPanel.supports(site_cls):
-            self.filter_btn.setChecked(False)
-        self._hint(self._idle_hint())
-
     def _filters_changed(self) -> None:
         n = self.filters.count()
         self.filter_btn.setText(f" Filters ({n})" if n else " Filters")
@@ -1149,13 +1128,13 @@ class DownloadPage(QWidget):
 
     def _find(self) -> None:
         text = self.query.text().strip()
-        site_cls = core.site_named(self.source.currentData())
-        filters = self.filters.filters() if FilterPanel.supports(site_cls) else core.SearchFilters()
+        site_cls = core.AllSites
+        filters = self.filters.filters()
         if not text and not filters:
             self._hint("Type a manga name first, or pick some filters ✦", error=True)
             return
         if core.site_for(text):
-            self._fetch(text)
+            self._fetch([text])
             return
         if text and len(text) < 2:
             self._hint("Type at least 2 letters of the name", error=True)
@@ -1306,7 +1285,7 @@ class DownloadPage(QWidget):
                 item.set_cover(self.cover_cache[result.cover_url])
             if result.url in self.about_cache:
                 item.set_about(*self.about_cache[result.url])
-            elif hasattr(self.search_site, "about"):
+            elif result.genres is None and hasattr(core.site_for(result.url), "about"):
                 item.start_loading()
             self.results.append(item)
         self.results_cols = 0
@@ -1353,24 +1332,23 @@ class DownloadPage(QWidget):
             bar = self.findChild(QScrollArea).verticalScrollBar()
             bar.setValue(min(bar.value(), self.results_card.y()))  # back to the top of the results
         self.cover_token += 1
-        token, site_cls = self.cover_token, self.search_site
-        missing = [(i, r.cover_url) for i, r in enumerate(results) if r.cover_url and r.cover_url not in self.cover_cache]
-        unknown = [(i, r.url) for i, r in enumerate(results) if r.url not in self.about_cache]
+        token = self.cover_token
+        missing = [(i, r) for i, r in enumerate(results) if r.cover_url and r.cover_url not in self.cover_cache]
+        unknown = [(i, r.url) for i, r in enumerate(results) if r.genres is None and r.url not in self.about_cache
+                   and hasattr(core.site_for(r.url), "about")]
         limiter = core.RateLimiter(self.settings.request_delay)
 
         def covers() -> None:
-            site = site_cls("", limiter)
-            for i, url in missing:
+            sites = {s.name: s("", limiter) for s in core.SITES}
+            for i, r in missing:
                 if token != self.cover_token:
                     return  # another page is showing now
-                self.bridge.cover_ready.emit(token, i, site.cover(url))
-            if not hasattr(site, "about"):
-                return
+                self.bridge.cover_ready.emit(token, i, sites[r.site or core.site_for(r.url).name].cover(r.cover_url))
             for i, url in unknown:  # then the genres and descriptions, which need each title's page
                 if token != self.cover_token:
                     return
                 try:
-                    genres, description, rating = site.about(url)
+                    genres, description, rating = sites[core.site_for(url).name].about(url)
                 except core.SiteError:
                     self.bridge.about_missed.emit(token, i)  # the card just stays without tags
                     continue
@@ -1395,25 +1373,30 @@ class DownloadPage(QWidget):
 
     def _pick(self, result: core.SearchResult) -> None:
         if not self.running:
-            self._fetch(result.url)
+            self._fetch(result.urls or [result.url], [result.title, *result.aliases])
 
     def _show_results(self) -> None:
         self.back_btn.hide()
         self.results_card.show()
 
-    def _fetch(self, url: str) -> None:
-        site_cls = core.site_for(url)
+    def _fetch(self, urls: list[str], names: list[str] = ()) -> None:
+        """Look a title up on every site that has it; one we already know brings along where it was found before."""
         self._hint("Looking it up…")
         self.manga_card.hide()
         self.files_card.hide()
         self._start_lookup("Looking it up…", "Reading the chapter list and cover ✦")
         limiter = core.RateLimiter(self.settings.request_delay)
+        key = self.history.find(urls)
+        entry = self.history.get(key) or {}
+        urls = list(dict.fromkeys([*urls, *self.history.sources(key)]))
 
         def work() -> None:
             try:
-                site = site_cls(url, limiter)
-                self.bridge.fetched.emit(site, site.info())
+                site, info = core.open_title(urls, limiter, entry.get("title", ""), key or "",
+                                             self.history.look_on(key) if key else None, names=names)
+                self.bridge.fetched.emit(site, info)
             except Exception as e:
+                logger.info("looking up %s failed", urls, exc_info=True)
                 self.bridge.fetch_failed.emit(str(e))
 
         threading.Thread(target=work, daemon=True).start()
@@ -1443,6 +1426,8 @@ class DownloadPage(QWidget):
             return
         self.site, self.info = site, info
         self.key = site.key
+        if self.history.get(self.key):
+            self.history.set_sources(self.key, site.sources, site.missing)
         self.history.prune_missing()
         self.new_keys = set()
         if self.history.in_library(self.key):  # only titles in the library are kept up to date there
@@ -1472,7 +1457,7 @@ class DownloadPage(QWidget):
         self.per_file.setVisible(bool(loose))
         self.per_file_lbl.setVisible(bool(loose))
         self.loose_note.setVisible(bool(loose))
-        self.loose_note.setText(f"{loose} of {len(info.chapters)} chapters have no volume number on this site, "
+        self.loose_note.setText(f"{loose} of {len(info.chapters)} chapters have no volume number, "
                                 "so they are grouped into files by chapter count.")
         self.manga_card.show()
         self.files_card.show()
@@ -1502,6 +1487,7 @@ class DownloadPage(QWidget):
             return
         info = self.info
         self.history.remember(self.key, self.site.title_url, info.title, len(info.chapters), info.status, info.cover)
+        self.history.set_sources(self.key, self.site.sources, self.site.missing)
         self.history.mark_seen(self.key, [chapter_key(c.number) for c in info.chapters])
         self.sync_library_btn()
 
@@ -1530,13 +1516,11 @@ class DownloadPage(QWidget):
         """Load a title; with action "continue" or "retry", also start downloading what's left or what failed."""
         if action != "open":
             self._after_fetch = lambda: self._resume(action == "retry")
-        self._fetch(url)
+        self._fetch([url])
 
     def apply_defaults(self, old: Settings) -> None:
         """After the settings were saved: fields still on the old default follow the new one, edited ones stay."""
         s = self.settings
-        if self.source.currentData() == old.default_source:
-            self.source.setCurrentIndex(max(0, self.source.findData(s.default_source)))
         if s.files_per_page != old.files_per_page:  # stay on the page with the file that was at the top
             self._show_page(self.page * old.files_per_page // s.files_per_page)
         if not self.info or self.running:
@@ -1601,7 +1585,8 @@ class DownloadPage(QWidget):
         status = f"{self.info.status}  ·  " if self.info.status else ""
         status += f"{stars_text(self.info.rating)}  ·  "
         self.meta_lbl.setText(f"{status}{len(self.info.chapters)} chapters  ·  "
-                              f"{'volume numbers available' if vols else 'no volume numbers'}")
+                              f"{'volume numbers available' if vols else 'no volume numbers'}  ·  "
+                              f"from {core._names(self.info.sources) if self.info.sources else '?'}")
         self.table.blockSignals(True)
         self.table.setRowCount(0)  # fresh rows; the old progress bars go with them
         self.table.setRowCount(len(self.groups))
@@ -1997,7 +1982,7 @@ class DownloadPage(QWidget):
     # ---- downloading
 
     def _set_locked(self, locked: bool) -> None:
-        for w in (self.source, self.query, self.fetch_btn, self.filter_btn, self.filters, self.fmt, self.per_file, self.save_to, self.select_btn,
+        for w in (self.query, self.fetch_btn, self.filter_btn, self.filters, self.fmt, self.per_file, self.save_to, self.select_btn,
                   self.page_btn, self.lib_btn):
             w.setEnabled(not locked)
         self.table.setEnabled(True)  # paws ignore clicks while running (see eventFilter); filters still work
@@ -2185,7 +2170,7 @@ class SettingsPage(QWidget):
 
     # The tabs: (name, icon, the settings each one holds, so a tab can show it has unsaved changes)
     TABS = [
-        ("Downloads", "download", ("default_source", "download_dir", "default_format", "chapters_per_file")),
+        ("Downloads", "download", ("download_dir", "default_format", "chapters_per_file")),
         ("Look && reading", "book", ("theme", "files_per_page", "read_rtl")),
         ("Speed", "paw", ("workers", "download_mode", "request_delay", "temp_dir", "keep_temp")),
         ("App", "cat", ()),
@@ -2221,12 +2206,8 @@ class SettingsPage(QWidget):
         downloads, look, speed, app = (self._tab_page() for _ in self.TABS)
 
         where, wl = card()
-        wl.addWidget(label("Where from, where to", "h2"))
+        wl.addWidget(label("Where they go", "h2"))
         form = form_layout()
-        self.source = combo_box()
-        for site in core.SITES:
-            self.source.addItem(site.name, site.name)
-        form.addRow("Default source", with_hint(self.source, "Where the Download page searches first."))
         self.download_dir = QLineEdit()
         form.addRow("Download folder", with_hint(folder_row(self.download_dir, "Default download folder"),
                                                  "Each manga gets its own folder in here."))
@@ -2386,7 +2367,7 @@ class SettingsPage(QWidget):
         # Save and Undo are only clickable while the form differs from what is saved.
         for w in (self.download_dir, self.temp_dir):
             w.textChanged.connect(self._update_dirty)
-        for w in (self.theme, self.source, self.fmt, self.mode, self.rtl):
+        for w in (self.theme, self.fmt, self.mode, self.rtl):
             w.currentIndexChanged.connect(self._update_dirty)
         for w in (self.per_file, self.per_page, self.workers, self.delay):
             w.valueChanged.connect(self._update_dirty)
@@ -2465,7 +2446,6 @@ class SettingsPage(QWidget):
         self.workers.setValue(s.workers)
         self.mode.setCurrentIndex(max(0, self.mode.findData(s.download_mode)))
         self.theme.setCurrentIndex(max(0, self.theme.findData(s.theme)))
-        self.source.setCurrentIndex(max(0, self.source.findData(s.default_source)))
         self.delay.setValue(s.request_delay)
 
     def _form(self) -> Settings:
@@ -2482,7 +2462,6 @@ class SettingsPage(QWidget):
             files_per_page=self.per_page.value(),
             keep_temp=self.keep_temp.isChecked(),
             theme=self.theme.currentData(),
-            default_source=self.source.currentData(),
             read_rtl=self.rtl.currentData(),
         )
 
@@ -2998,6 +2977,7 @@ class Reader(QWidget):
 class LibraryBridge(QObject):
     checked = Signal(str, int, str, list)  # key, total chapters, status, chapter keys
     check_failed = Signal(str)
+    sources_found = Signal(str, dict, list)  # key, site name -> title page, sites that don't have it
     checks_done = Signal()
 
 
@@ -3015,6 +2995,8 @@ class LibraryPage(QWidget):
         self.checking = False
         self.bridge = LibraryBridge()
         self.bridge.checked.connect(self._on_checked)
+        self.bridge.sources_found.connect(lambda key, found, missing: self.history.get(key) and
+                                          self.history.set_sources(key, found, missing))
         self.bridge.check_failed.connect(lambda key: self._set_checking(key, False))
         self.bridge.checks_done.connect(self._on_checks_done)
 
@@ -3333,12 +3315,14 @@ class LibraryPage(QWidget):
 
         def work() -> None:
             for key, entry in due:
-                site_cls = core.site_for(entry["url"])
                 try:
-                    info = site_cls(entry["url"], limiter).info(with_cover=False)
+                    site, info = core.open_title(self.history.sources(key), limiter, entry.get("title", ""), key,
+                                                 self.history.look_on(key), with_cover=False)
                     keys = [chapter_key(c.number) for c in info.chapters]
+                    self.bridge.sources_found.emit(key, site.sources, site.missing)
                     self.bridge.checked.emit(key, len(keys), info.status, keys)
                 except Exception:
+                    logger.info("checking %s failed", key, exc_info=True)
                     self.bridge.check_failed.emit(key)
             self.bridge.checks_done.emit()
 
