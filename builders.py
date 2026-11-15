@@ -32,17 +32,33 @@ def as_jpeg_or_png(path: Path) -> Path:
     return out
 
 
-def build_cbz(images: list[Path], out: Path, title: str) -> None:
+def comic_info(title: str, meta: dict, pages: int) -> str:
+    """ComicInfo.xml, the details comic readers and servers (Kavita, Komga, Mihon, Panels...) read from a CBZ."""
+    fields = [("Title", title), ("Series", meta.get("series")), ("Number", meta.get("number")),
+              ("Volume", meta.get("volume")), ("Summary", meta.get("summary")), ("Writer", meta.get("author")),
+              ("Genre", ", ".join(meta.get("genres", []))), ("Web", meta.get("web")), ("PageCount", pages),
+              ("LanguageISO", "en"), ("Manga", "YesAndRightToLeft")]
+    body = "".join(f"<{k}>{html.escape(str(v), quote=False)}</{k}>" for k, v in fields if v not in (None, ""))
+    return ('<?xml version="1.0" encoding="utf-8"?>\n<ComicInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+            f'xmlns:xsd="http://www.w3.org/2001/XMLSchema">{body}</ComicInfo>')
+
+
+def build_cbz(images: list[Path], out: Path, title: str, meta: dict | None = None) -> None:
     with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:
         for i, img in enumerate(images, 1):
             z.write(img, f"{i:05d}{img.suffix}")
+        if meta is not None:
+            z.writestr("ComicInfo.xml", comic_info(title, meta, len(images)), zipfile.ZIP_DEFLATED)
 
 
-def build_pdf(images: list[Path], out: Path, title: str) -> None:
-    out.write_bytes(img2pdf.convert([str(as_jpeg_or_png(p)) for p in images], title=title))
+def build_pdf(images: list[Path], out: Path, title: str, meta: dict | None = None) -> None:
+    meta = meta or {}
+    extra = {k: v for k, v in (("author", meta.get("author")), ("subject", meta.get("summary")),
+                               ("keywords", meta.get("genres"))) if v}
+    out.write_bytes(img2pdf.convert([str(as_jpeg_or_png(p)) for p in images], title=title, **extra))
 
 
-def build_images(images: list[Path], out: Path, title: str) -> None:
+def build_images(images: list[Path], out: Path, title: str, meta: dict | None = None) -> None:
     out.mkdir(parents=True, exist_ok=True)
     for i, img in enumerate(images, 1):
         shutil.copyfile(img, out / f"{i:05d}{img.suffix}")
@@ -88,7 +104,7 @@ def slice_strip(path: Path) -> list[Path]:
         return parts
 
 
-def build_epub(images: list[Path], out: Path, title: str) -> None:
+def build_epub(images: list[Path], out: Path, title: str, meta: dict | None = None) -> None:
     strip = is_strip(images)
     images = [as_jpeg_or_png(p) for p in images]
     if strip:
@@ -135,12 +151,28 @@ def build_epub(images: list[Path], out: Path, title: str) -> None:
             '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
             f'<dc:identifier id="uid">urn:uuid:{uuid.uuid4()}</dc:identifier><dc:title>{esc}</dc:title>'
             "<dc:language>en</dc:language>"
+            f"{_epub_meta(meta or {})}"
             f'<meta property="dcterms:modified">{time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}</meta>'
             '<meta property="rendition:layout">pre-paginated</meta>'
             f'<meta property="rendition:spread">{spread}</meta></metadata><manifest>'
             '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>'
             f'{"".join(manifest)}</manifest><spine page-progression-direction="{direction}">{"".join(spine)}</spine></package>',
         )
+
+
+def _epub_meta(meta: dict) -> str:
+    """Author, genres, summary and series for an EPUB's content.opf, so e-readers can group the volumes."""
+    esc = html.escape
+    out = [f"<dc:creator>{esc(meta['author'])}</dc:creator>"] if meta.get("author") else []
+    out += [f"<dc:subject>{esc(g)}</dc:subject>" for g in meta.get("genres", [])]
+    if meta.get("summary"):
+        out.append(f"<dc:description>{esc(meta['summary'])}</dc:description>")
+    if meta.get("series"):
+        out.append(f'<meta property="belongs-to-collection" id="series">{esc(meta["series"])}</meta>'
+                   '<meta refines="#series" property="collection-type">series</meta>')
+        if meta.get("number") not in (None, ""):
+            out.append(f'<meta refines="#series" property="group-position">{esc(str(meta["number"]))}</meta>')
+    return "".join(out)
 
 
 BUILDERS = {"cbz": build_cbz, "pdf": build_pdf, "epub": build_epub, "images": build_images}
@@ -171,6 +203,7 @@ def pages_of(path: Path) -> list[tuple[str, bytes]]:
         return [(Path(n).suffix, z.read(n)) for n in names]
 
 
-def build_file(fmt: str, images: list[Path], out: Path, title: str) -> Path:
-    BUILDERS[fmt](images, out, title)
+def build_file(fmt: str, images: list[Path], out: Path, title: str, meta: dict | None = None) -> Path:
+    """`meta` (series, number, volume, summary, author, genres, web) goes into the file for other readers."""
+    BUILDERS[fmt](images, out, title, meta)
     return out

@@ -57,6 +57,7 @@ class Group:
     # Chapters already in a file we made: number -> (that file, all its chapters in order), so
     # their pages come out of it instead of being downloaded again.
     reuse: dict[float, tuple[str, list[Chapter]]] = field(default_factory=dict)
+    about: dict = field(default_factory=dict)  # the series' summary, author, genres, page: written into the file
 
 
 @dataclass
@@ -1339,6 +1340,16 @@ def target_path(title: str, group: Group, fmt: str, book_dir: Path) -> Path:
     return book_dir / (name if fmt == "images" else f"{name}.{fmt}")
 
 
+def file_meta(title: str, group: Group) -> dict:
+    """What a file says about itself (see builders.build_file): its series, and its place in it."""
+    volumes = {c.volume for c in group.chapters}
+    volume = volumes.pop() if len(volumes) == 1 and NO_VOLUME not in volumes else None
+    by_volume = group.label.startswith("Vol") and volume is not None
+    first = min((c.number for c in group.chapters), default=None)
+    return {"series": title, "volume": volume,
+            "number": volume if by_volume else (f"{first:g}" if first is not None else None), **group.about}
+
+
 def make_file(site, index: int, group: Group, fmt: str, title: str, book_dir: Path, work_dir: Path,
               keep_tmp: bool, cancel, report: Callable[..., None],
               build: Callable[..., Path], rebuild: bool = False) -> bool:
@@ -1359,7 +1370,7 @@ def make_file(site, index: int, group: Group, fmt: str, title: str, book_dir: Pa
         report(index, BUILDING, 1.0, f"{'Remaking' if rebuild else 'Making'} {fmt.upper()}")
         if target.exists():
             out = target.with_name(f"rebuilding - {target.name}")
-        build(fmt, images, out, f"{title} - {group.label}")
+        build(fmt, images, out, f"{title} - {group.label}", file_meta(title, group))
         if out != target:  # swap the finished file in; the old one stays until then
             if target.is_dir():
                 shutil.rmtree(target)

@@ -2117,8 +2117,11 @@ class DownloadPage(QWidget):
         # Files whose chapters move into another one; they're put in the bin once it's made.
         self.run_reuse = {r: {self.reuse[chapter_key(c.number)][0] for c in self.groups[r].chapters
                               if chapter_key(c.number) in self.reuse} for r in rows}
-        groups = [replace(g, reuse={c.number: self.reuse[chapter_key(c.number)] for c in g.chapters
-                                    if chapter_key(c.number) in self.reuse}) for g in groups]
+        info = self.info
+        about = {"summary": info.description, "author": info.author, "genres": info.genres,
+                 "web": next(iter(getattr(self.site, "sources", {}).values()), "")}
+        groups = [replace(g, about=about, reuse={c.number: self.reuse[chapter_key(c.number)] for c in g.chapters
+                                                 if chapter_key(c.number) in self.reuse}) for g in groups]
 
         def on_status(index: int, state: str, frac: float, msg: str, got: int = 0) -> None:
             self.bridge.status.emit(rows[index], state, frac, msg, got)

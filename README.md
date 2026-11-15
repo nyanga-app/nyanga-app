@@ -53,7 +53,8 @@
   chapter won't download from one site, it's fetched from the next, and if a manga in your Library
   moves or disappears from a site, Nyanga finds it again elsewhere.
 - 📚 **Volumes, not a pile of pages**: one CBZ, PDF or EPUB per volume, or per *N* chapters when the
-  site has no volume numbers. Webtoon strips are cut into pages for EPUB.
+  site has no volume numbers. Webtoon strips are cut into pages for EPUB. Each file carries the
+  series name, volume, author, genres and summary, so other comic and e-book apps sort it properly.
 - ⚡ **Fast but polite**: several files at once, with one shared speed limit so the site isn't flooded.
 - 💾 **Picks up where it stopped**: cancel, close, come back later; finished files are skipped.
 - 🗂️ **A Library**: every manga you've downloaded, how much of the series you have, and a "new"
