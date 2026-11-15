@@ -2,6 +2,12 @@
 
 Written by the release workflow from the commit messages. Each version is a [GitHub Release](https://github.com/nyanga-app/nyanga-app/releases) with its installer.
 
+## [1.24.0](https://github.com/nyanga-app/nyanga-app/releases/tag/v1.24.0) (2026-11-15)
+
+### New
+- library: you can now search your library and sort it by name, last read or new chapters
+- downloaded files now carry the series name, volume, author, genres and summary for other reading apps
+
 ## [1.23.0](https://github.com/nyanga-app/nyanga-app/releases/tag/v1.23.0) (2026-11-15)
 
 ### New
