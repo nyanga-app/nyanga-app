@@ -2,6 +2,14 @@
 
 Written by the release workflow from the commit messages. Each version is a [GitHub Release](https://github.com/nyanga-app/nyanga-app/releases) with its installer.
 
+## [1.23.0](https://github.com/nyanga-app/nyanga-app/releases/tag/v1.23.0) (2026-11-15)
+
+### New
+- library: a chapter that belongs in one of your files is now put into it by itself when you open the manga
+
+### Fixes
+- library: the chapter count on a library card no longer goes over the total, like "97 of 90"
+
 ## [1.22.0](https://github.com/nyanga-app/nyanga-app/releases/tag/v1.22.0) (2026-11-15)
 
 ### New
