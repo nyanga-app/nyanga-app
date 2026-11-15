@@ -2311,6 +2311,21 @@ class SettingsPage(QWidget):
                 if appmenu.available() else "Running from source: pull the repo to update ✿")
         app.addWidget(ups)
 
+        sites, sl = card()
+        sl.addWidget(label("Where manga comes from", "h2"))
+        sl.addWidget(label("Nyanga searches all of these at once and takes each chapter from whichever has it, "
+                           "so you never have to pick ✦", "hint", wrap=True))
+        grid = QGridLayout()
+        grid.setSpacing(8)
+        for i, site in enumerate(core.SITES):
+            pill = QPushButton(f"♥  {site.name}", objectName="sitePill")
+            pill.setCursor(Qt.PointingHandCursor)
+            pill.setToolTip(f"Open {site.name} in your browser")
+            pill.clicked.connect(lambda _=False, url=site.home: QDesktopServices.openUrl(QUrl(url)))
+            grid.addWidget(pill, i // 3, i % 3)
+        sl.addLayout(grid)
+        app.addWidget(sites)
+
         if appmenu.available():  # only the Linux AppImage; Windows has its installer
             menu, ml = card()
             ml.addWidget(label("App menu", "h2"))
@@ -4121,19 +4136,6 @@ class MainWindow(QWidget):
             if i == 0:
                 b.setChecked(True)
         sl.addStretch(1)
-        sites = QFrame(objectName="sitesBox")
-        sbox = QVBoxLayout(sites)
-        sbox.setContentsMargins(12, 10, 12, 12)
-        sbox.setSpacing(6)
-        sbox.addWidget(label("SUPPORTED SITES", "sitesTitle"))
-        for site in core.SITES:
-            pill = QPushButton(f"♥  {site.name}", objectName="sitePill")
-            pill.setCursor(Qt.PointingHandCursor)
-            pill.setToolTip(f"Open {site.name} in your browser")
-            pill.clicked.connect(lambda _=False, url=site.home: QDesktopServices.openUrl(QUrl(url)))
-            sbox.addWidget(pill)
-        sl.addWidget(sites)
-        sl.addSpacing(6)
         self.toggle = QPushButton(objectName="themeToggle")
         self.toggle.setCursor(Qt.PointingHandCursor)
         self.toggle.setIconSize(QSize(18, 18))

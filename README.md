@@ -274,8 +274,8 @@ It's split into tabs, and a tab with unsaved changes gets a little ✦.
   - **Delay between requests**: shared by all workers, so more workers never means more
     requests per second. Sites ask for human browsing speed; going too low can get you blocked.
   - The temp folder, and whether to keep temp files.
-- **App**: your version, **What's new**, **Check for updates**, where the settings file is
-  and, in the Linux AppImage, adding Nyanga to your app menu.
+- **App**: your version, **What's new**, **Check for updates**, the sites Nyanga gets manga
+  from, where the settings file is and, in the Linux AppImage, adding Nyanga to your app menu.
 - Change something and **Save** or **Undo** it before leaving the page. Saving new defaults
   also updates a manga that's open on the Download page, except for the fields you changed
   there yourself.

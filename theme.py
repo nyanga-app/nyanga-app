@@ -18,7 +18,7 @@ PALETTES = {
     LIGHT: {
         "text": "#5a2a41", "muted": "#a86b88", "accent": "#e0457f", "accent_soft": "#c2457a",
         "bg": "#fff0f6", "side_top": "#ffd6e7", "side_bottom": "#ffc0d9", "side_text": "#8a3b62",
-        "nav_hover": "rgba(255, 255, 255, 0.45)", "nav_checked": "#ffffff", "sites_bg": "rgba(255, 255, 255, 0.4)",
+        "nav_hover": "rgba(255, 255, 255, 0.45)", "nav_checked": "#ffffff",
         "card": "#ffffff", "border": "#ffd6e7", "button": "#ffe3ef", "button_hover": "#ffd1e4",
         "disabled_bg": "#f6e9ef", "disabled_text": "#d3b3c2", "primary_a": "#ff7eb3", "primary_b": "#ff5c9a",
         "primary_hover": "#ff4f90", "primary_disabled": "#f3c6d8", "primary_disabled_text": "#fff6fa",
@@ -31,7 +31,7 @@ PALETTES = {
     DARK: {
         "text": "#f6dbe8", "muted": "#c08aa5", "accent": "#ff8fbf", "accent_soft": "#ff9ec6",
         "bg": "#1d1420", "side_top": "#2c1b2c", "side_bottom": "#231623", "side_text": "#e7b6cf",
-        "nav_hover": "rgba(255, 143, 191, 0.10)", "nav_checked": "#3a2338", "sites_bg": "rgba(255, 143, 191, 0.07)",
+        "nav_hover": "rgba(255, 143, 191, 0.10)", "nav_checked": "#3a2338",
         "card": "#291d2b", "border": "#3d2a3e", "button": "#3a2338", "button_hover": "#4a2b46",
         "disabled_bg": "#2a2029", "disabled_text": "#6b5566", "primary_a": "#ff7eb3", "primary_b": "#ff5c9a",
         "primary_hover": "#ff6fa6", "primary_disabled": "#4b2f43", "primary_disabled_text": "#9c7890",
@@ -53,11 +53,9 @@ QFrame#sidebar {
 }
 QLabel#logo { font-size: 20px; font-weight: 700; color: $accent; }
 QLabel#tagline { color: $muted; font-size: 12px; }
-QFrame#sitesBox { background: $sites_bg; border-radius: 16px; }
-QLabel#sitesTitle { color: $muted; font-size: 10px; font-weight: 600; }
 QPushButton#sitePill {
-    background: $card; color: $accent_soft; border-radius: 10px; padding: 5px 10px;
-    font-size: 12px; font-weight: 600; text-align: left;
+    background: $chip; color: $accent_soft; border-radius: 12px; padding: 8px 12px;
+    font-size: 13px; font-weight: 600; text-align: left;
 }
 QPushButton#sitePill:hover { color: $accent; text-decoration: underline; }
 QLabel#greeting { color: $accent; font-size: 17px; font-weight: 700; padding-left: 4px; }
@@ -115,7 +113,7 @@ QLabel#stars { color: $accent; font-weight: 600; font-size: 12px; }
 QLabel#stars[unrated="true"] { color: $muted; font-weight: 400; }
 QPushButton#pager { min-width: 34px; max-width: 34px; padding: 4px 0; font-size: 20px; font-weight: 700; }
 QPushButton#primary {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 $primary_a, stop:1 $primary_b);
+    background: $primary_b;
     color: white; padding: 11px 24px; font-size: 15px;
 }
 QPushButton#primary:hover { background: $primary_hover; }
@@ -164,7 +162,7 @@ QLabel#noteTitle { font-size: 14px; font-weight: 600; }
 QLabel#noteDetail { color: $muted; font-size: 13px; }
 QFrame#notify { background: $card; border: 2px solid $border; border-radius: 22px; }
 QFrame#updatePill {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 $primary_a, stop:1 $primary_b);
+    background: $primary_b;
     border-radius: 21px;
 }
 QFrame#updatePill:hover { background: $primary_hover; }

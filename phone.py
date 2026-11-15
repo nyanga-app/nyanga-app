@@ -465,8 +465,7 @@ h1 { font-size: 26px; font-weight: 600; margin: 4px 0 2px; }
 .info { -webkit-box-flex: 1; -webkit-flex: 1; flex: 1; min-width: 0; margin: 0 14px; }
 .info b { display: block; font-weight: 600; word-wrap: break-word; overflow-wrap: break-word; }
 .info small { font-size: 14px; }
-.save, .all { background-color: #ff6fa6; background-image: -webkit-linear-gradient(left, #ff7eb3, #ff5c9a);
-        background-image: linear-gradient(90deg, #ff7eb3, #ff5c9a); color: #fff; font-weight: 600;
+.save, .all { background-color: #ff5c9a; color: #fff; font-weight: 600;
         border-radius: 14px; padding: 10px 18px; -webkit-flex: none; flex: none; text-decoration: none; }
 .all { display: block; text-align: center; margin: 0 0 8px; padding: 14px; font-size: 17px; }
 .each { display: block; width: 100%; margin: 0 0 8px; padding: 12px; font-family: inherit; font-size: 16px;
