@@ -154,10 +154,14 @@ class History:
         entry["last_used"] = time.time()
         self.save()
 
-    def file_done(self, key: str, chapters: list[str], path: str) -> None:
+    def file_done(self, key: str, chapters: list[str], path: str, made: bool = True) -> None:
+        """Chapters saved in a file. With `made` False the file was already there and was left alone:
+        chapters known to be in another file that still exists keep pointing there."""
         entry = self.data[key]
         for c in chapters:
-            entry["downloaded"][c] = path
+            other = entry["downloaded"].get(c)
+            if made or not other or other == path or not Path(other).exists():
+                entry["downloaded"][c] = path
         done = set(chapters)
         entry["pending"] = [c for c in entry["pending"] if c not in done]
         entry["failed"] = [c for c in entry["failed"] if c not in done]

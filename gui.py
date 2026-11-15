@@ -2062,15 +2062,18 @@ class DownloadPage(QWidget):
 
     def _incomplete(self, groups: list[core.Group], fmt: str) -> frozenset[int]:
         """Groups whose file exists but holds only some of its chapters (the site added more since),
-        so it gets made again. A file the history knows nothing about is left alone."""
+        so it gets made again. A file the history knows nothing about is left alone, and so is one
+        holding chapters this group no longer has (the volumes were split differently on another
+        site): remaking it would lose them."""
         downloaded = (self.history.get(self.key) or {}).get("downloaded", {})
         found = set()
         for i, group in enumerate(groups):
             target = core.target_path(self.info.title, group, fmt, self.book_dir)
             if not target.exists():
                 continue
-            inside = [k for k in group_keys(group) if k in downloaded and Path(downloaded[k]) == target]
-            if inside and len(inside) < len(group.chapters):
+            keys = set(group_keys(group))
+            held = {k for k, f in downloaded.items() if Path(f) == target}
+            if held and held < keys:
                 found.add(i)
         return frozenset(found)
 
@@ -2096,7 +2099,7 @@ class DownloadPage(QWidget):
         self.fractions[row] = 1.0 if state in (core.DONE, core.SKIPPED, core.FAILED) else frac
         self.states[row] = state
         if state in (core.DONE, core.SKIPPED):
-            self.history.file_done(self.key, group_keys(self.groups[row]), msg)
+            self.history.file_done(self.key, group_keys(self.groups[row]), msg, made=state == core.DONE)
         elif state == core.FAILED:
             self.history.file_failed(self.key, group_keys(self.groups[row]))
         self.overall.setValue(int(self._overall() * 1000))
