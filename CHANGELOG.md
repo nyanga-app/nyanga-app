@@ -2,6 +2,15 @@
 
 Written by the release workflow from the commit messages. Each version is a [GitHub Release](https://github.com/nyanga-app/nyanga-app/releases) with its installer.
 
+## [1.21.0](https://github.com/nyanga-app/nyanga-app/releases/tag/v1.21.0) (2026-11-15)
+
+### New
+- added weebcentral.com and mangakatana.com, so more manga are up to date
+- settings: the list of sites moved from the sidebar to the app tab in settings, and buttons are no longer gradients
+
+### Fixes
+- library: a manga that moved to another site no longer asks to download files you already have
+
 ## [1.20.0](https://github.com/nyanga-app/nyanga-app/releases/tag/v1.20.0) (2026-11-15)
 
 ### New
