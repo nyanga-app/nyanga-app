@@ -207,9 +207,10 @@ chapters are downloaded as usual.
 
 The files you have decide how the list is laid out, even if the site a manga comes from changes
 and splits its volumes differently. If a chapter belongs inside a file you have (say Vol. 04 was
-missing chapter 66, and you got 66 on its own later), that file's row says **Adds ch. 66 ✦**:
-downloading it remakes Vol. 04 with 66 in its place, from the pages already on your computer, and
-the loose file goes to the Recycle Bin.
+missing chapter 66, and you got 66 on its own later), Nyanga fixes it by itself the next time you
+open the manga: it remakes Vol. 04 with 66 in its place, from the pages already on your computer
+(the line under the search box says so), and the loose file goes to the Recycle Bin. New chapters
+that belong inside a file you have go straight into it (its row says **Adds ch. 66 ✦**).
 
 Webtoons (long vertical strips) are cut into screen-sized pages in EPUB. CBZ and PDF keep
 the original strips; use a reader with a continuous-scroll mode for those.

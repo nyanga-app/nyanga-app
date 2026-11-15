@@ -1481,6 +1481,8 @@ class DownloadPage(QWidget):
         if self._after_fetch:
             action, self._after_fetch = self._after_fetch, None
             action()
+        else:
+            self._auto_tidy()
 
     # ---- library
 
@@ -1596,6 +1598,34 @@ class DownloadPage(QWidget):
                     and core.safe_name(f"{self.info.title} - {label}") == stem:
                 out.setdefault(label, (path, set()))[1].add(key)
         return out
+
+    def _auto_tidy(self) -> None:
+        """Put chapters that belong in a file you have into it straight away, when they're all on your
+        computer already (in loose files): there's nothing to download, so nothing to ask about."""
+        if self.running or not self.history.get(self.key):
+            return
+        rows = []
+        for i, g in enumerate(self.groups):
+            fit = self._to_fit(i)
+            if fit and len(fit) < len(g.chapters) and all(k in self.reuse for k in fit):
+                rows.append(i)
+        fmts = {}
+        for i in rows:
+            path = Path(self.fit_files[self.groups[i].label][0])
+            fmt = "images" if path.is_dir() else path.suffix[1:].lower()
+            if fmt in FORMATS:
+                fmts.setdefault(fmt, []).append(i)
+        if not fmts:
+            return
+        fmt, rows = max(fmts.items(), key=lambda kv: len(kv[1]))  # one format per run; the rest next time
+        logger.info("tidying %s: %s", self.key, ", ".join(self.groups[i].label for i in rows))
+        self.fmt.setCurrentIndex(max(0, self.fmt.findData(fmt)))
+        self._check(lambda i: i in rows)
+        self._start()
+        if self.running:
+            loose = sorted({k for i in rows for k in self._to_fit(i)}, key=float)
+            self._hint(f"Putting ch. {', '.join(loose[:3])}{'…' if len(loose) > 3 else ''} into "
+                       f"{', '.join(self.groups[i].label for i in rows)}, where it belongs, from your files ✦")
 
     def _to_fit(self, row: int) -> list[str]:
         """Chapters that belong in this file but aren't in it yet (downloaded on their own, or not at all)."""
