@@ -65,9 +65,11 @@
 - 🌙 **Light and dark**, or follow your system.
 - 🎁 **Updates itself**: when a new version is out, one click and it's done.
 
-Supported sites: **fanfox.net** (`https://fanfox.net/manga/<title>/`) and **mangadex.org**
+Supported sites: **fanfox.net** (`https://fanfox.net/manga/<title>/`), **mangadex.org**
 (`https://mangadex.org/title/<id>`, English fan translations; big licensed series there often only
-link to the publisher's own site, and then their chapters come from fanfox.net)
+link to the publisher's own site, and then their chapters come from the others), **weebcentral.com**
+(`https://weebcentral.com/series/<id>/<title>`) and **mangakatana.com**
+(`https://mangakatana.com/manga/<title>.<id>`). They're listed in **Settings → App**.
 
 ## 🐾 Meet the cats
 

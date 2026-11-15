@@ -1379,8 +1379,9 @@ class DownloadPage(QWidget):
         self.back_btn.hide()
         self.results_card.show()
 
-    def _fetch(self, urls: list[str], names: list[str] = ()) -> None:
+    def _fetch(self, urls: list[str] | str, names: list[str] = ()) -> None:
         """Look a title up on every site that has it; one we already know brings along where it was found before."""
+        urls = [urls] if isinstance(urls, str) else urls
         self._hint("Looking it up…")
         self.manga_card.hide()
         self.files_card.hide()
@@ -1582,11 +1583,13 @@ class DownloadPage(QWidget):
             return
         self.groups = core.make_groups(self.info.chapters, self.per_file.value())
         vols = sum(1 for c in self.info.chapters if c.volume != core.NO_VOLUME)
+        sources = self.info.sources or [self.site.name]
         status = f"{self.info.status}  ·  " if self.info.status else ""
         status += f"{stars_text(self.info.rating)}  ·  "
         self.meta_lbl.setText(f"{status}{len(self.info.chapters)} chapters  ·  "
                               f"{'volume numbers available' if vols else 'no volume numbers'}  ·  "
-                              f"from {core._names(self.info.sources) if self.info.sources else '?'}")
+                              f"from {core._names(sources) if len(sources) < 3 else f'{len(sources)} sites'}")
+        self.meta_lbl.setToolTip("Chapters come from " + core._names(sources) if sources else "")
         self.table.blockSignals(True)
         self.table.setRowCount(0)  # fresh rows; the old progress bars go with them
         self.table.setRowCount(len(self.groups))

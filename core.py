@@ -217,7 +217,8 @@ class Site:
 
     def image(self, url: str) -> bytes:
         resp = self._get(url, referer=self.image_referer)
-        if not resp.headers.get("content-type", "").startswith("image/"):
+        if not resp.headers.get("content-type", "").startswith("image/") and \
+                not any(resp.content.startswith(magic) for magic, _ in EXT_BY_MAGIC):
             raise SiteError(f"Not an image: {url}")
         return resp.content
 
@@ -225,10 +226,15 @@ class Site:
         """Where a chapter can be downloaded from, best first."""
         return [(self, chapter)]
 
+    @classmethod
+    def lookup(cls, name: str, limiter: RateLimiter) -> list[SearchResult]:
+        """Titles that might go by this name, for finding a title seen on another site."""
+        return cls.search(name, limiter)[0]
+
 
 class FanFox(Site):
     name = "fanfox.net"
-    home = "https://fanfox.net/"  # the sidebar's Supported sites box links here
+    home = "https://fanfox.net/"  # linked from Settings, App tab
     example = "https://fanfox.net/manga/<title>/"
     url_re = re.compile(r"(?:fanfox\.net|mangafox\.\w+)/manga/([a-z0-9_]+)", re.I)
     _title_re = re.compile(r'class="detail-info-right-title-font">([^<]+)<')
@@ -559,7 +565,219 @@ class MangaDex(Site):
         return [f"{server['baseUrl']}/data/{ch['hash']}/{f}" for f in ch["data"]]
 
 
-SITES = [FanFox, MangaDex]
+def _chapter_number(label: str) -> float | None:
+    """The number in a chapter's name: "Chapter 12.5: Title" -> 12.5, "Smoke 67" -> 67."""
+    m = re.search(r"(?:chapter|ch\.?|episode|ep\.?)\s*(\d+(?:\.\d+)?)", label, re.I) or \
+        re.search(r"(\d+(?:\.\d+)?)(?!.*\d)", label)
+    return float(m.group(1)) if m else None
+
+
+class WeebCentral(Site):
+    """weebcentral.com: plain HTML, chapters straight from the uploads, no volume numbers."""
+    name = "weebcentral.com"
+    home = "https://weebcentral.com/"
+    example = "https://weebcentral.com/series/<id>/<title>"
+    url_re = re.compile(r"weebcentral\.com/series/([0-9A-Z]{26})", re.I)
+    referer = image_referer = "https://weebcentral.com/"
+    _user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36"
+    per_page = 32
+
+    def __init__(self, url: str, limiter: RateLimiter):
+        super().__init__(limiter)
+        match = self.url_re.search(url)
+        self.slug = match.group(1).upper() if match else ""
+
+    @property
+    def key(self) -> str:
+        return f"{self.name}:{self.slug.lower()}"
+
+    @property
+    def title_url(self) -> str:
+        return f"https://weebcentral.com/series/{self.slug}"
+
+    def info(self, with_cover: bool = True) -> MangaInfo:
+        page = self._get(self.title_url).text
+        title = re.search(r'<h1[^>]*>([^<]+)</h1>', page)
+        listed = self._get(f"https://weebcentral.com/series/{self.slug}/full-chapter-list").text
+        found = []
+        for cid, label in re.findall(r'<a href="(?:https://weebcentral\.com)?/chapters/([0-9A-Z]{26})"[^>]*>.*?'
+                                     r'<span class="">([^<]+)</span>', listed, re.S):
+            number = _chapter_number(html.unescape(label))
+            if number is not None:
+                found.append(Chapter(number, NO_VOLUME, f"https://weebcentral.com/chapters/{cid}"))
+        section = lambda name: re.search(rf"<strong>{name}[^<]*</strong>(.*?)</li>", page, re.S)
+        desc, authors, status = (section(n) for n in ("Description", "Author", "Status"))
+        names = re.search(r"<strong>Associated Name[^<]*</strong>(.*?)</ul>", page, re.S)
+        tags = section("Tag")
+        info = MangaInfo(
+            title=html.unescape(title.group(1)).strip() if title else "",
+            chapters=sorted(found, key=lambda c: c.number),
+            status=_plain(status.group(1)) if status else "",
+            genres=[html.unescape(t) for t in re.findall(r'included_tag=[^"]*"[^>]*>([^<]+)<', tags.group(1))] if tags else [],
+            description=_plain(desc.group(1)) if desc else "",
+            author=", ".join(html.unescape(a) for a in re.findall(r'author=[^"]*"[^>]*>([^<]+)<', authors.group(1)))
+            if authors else "",
+            aliases=[html.unescape(n).strip() for n in re.findall(r"<li>([^<]+)</li>", names.group(1))] if names else [],
+        )
+        if with_cover:
+            info.cover = self.cover(f"https://temp.compsci88.com/cover/fallback/{self.slug}.jpg")
+        return info
+
+    @classmethod
+    def search(cls, query: str, limiter: RateLimiter, page_no: int = 1,
+               filters: SearchFilters | None = None, sort: str = "") -> tuple[list[SearchResult], int]:
+        site = cls("", limiter)
+        params = {"text": query.strip(), "sort": "Best Match", "order": "Descending", "official": "Any",
+                  "anime": "Any", "adult": "Any", "display_mode": "Full Display", "limit": cls.per_page,
+                  "offset": (page_no - 1) * cls.per_page}
+        page = site._get("https://weebcentral.com/search/data?" + urlencode(params)).text
+        results = []
+        for item in re.split(r'<article class="bg-base-300', page)[1:]:
+            link = re.search(r'href="https://weebcentral\.com/series/([0-9A-Z]{26})/[^"]*"', item)
+            if not link:
+                continue
+            title = re.search(r'class="line-clamp-1 link link-hover">([^<]+)<', item) or \
+                re.search(r'alt="([^"]+) cover"', item)
+            field_ = lambda name: re.search(rf"<strong>{name}:</strong>\s*<span>([^<]*)</span>", item)
+            status = field_("Status")
+            results.append(SearchResult(
+                title=html.unescape(title.group(1)).strip() if title else "",
+                url=f"https://weebcentral.com/series/{link.group(1)}",
+                cover_url=f"https://temp.compsci88.com/cover/fallback/{link.group(1)}.jpg",
+                status=status.group(1).strip() if status else "",
+                author=", ".join(html.unescape(a) for a in re.findall(r'search\?author=[^"]*"[^>]*>([^<]+)<', item)),
+                genres=[html.unescape(t).strip(" ,") for t in re.findall(r"<span>([^<]+),?</span>",
+                        item.split("Tag(s):", 1)[1])] if "Tag(s):" in item else [],
+                site=cls.name,
+            ))
+        more = "offset=" in page and results
+        return results, page_no + 1 if more else page_no
+
+    def page_urls(self, chapter: Chapter) -> list[str]:
+        page = self._get(f"{chapter.url}/images?is_prev=False&current_page=1&reading_style=long_strip").text
+        urls = [html.unescape(u) for u in re.findall(r'<img[^>]+src="(https?://[^"]+)"', page) if "/static/" not in u]
+        if not urls:
+            raise SiteError(f"No pages found for chapter {fmt_num(chapter.number)}")
+        return urls
+
+
+class MangaKatana(Site):
+    """mangakatana.com: plain HTML; a chapter's pictures are listed in a script on its page."""
+    name = "mangakatana.com"
+    home = "https://mangakatana.com/"
+    example = "https://mangakatana.com/manga/<title>.<id>"
+    url_re = re.compile(r"mangakatana\.com/manga/([a-z0-9-]+\.\d+)", re.I)
+    referer = image_referer = "https://mangakatana.com/"
+    _user_agent = WeebCentral._user_agent
+
+    def __init__(self, url: str, limiter: RateLimiter):
+        super().__init__(limiter)
+        match = self.url_re.search(url)
+        self.slug = match.group(1).lower() if match else ""
+
+    @property
+    def key(self) -> str:
+        return f"{self.name}:{self.slug}"
+
+    @property
+    def title_url(self) -> str:
+        return f"https://mangakatana.com/manga/{self.slug}"
+
+    @staticmethod
+    def _jpg(url: str) -> str:
+        return re.sub(r"\.(avif|webp)$", ".jpg", url)  # Qt can't always show those; the site has a JPEG too
+
+    def _parse(self, page: str, with_cover: bool) -> MangaInfo:
+        title = re.search(r'<h1 class="heading">([^<]+)</h1>', page)
+        found = {}
+        own = re.escape(self.slug)
+        for path, label in re.findall(rf'<div class="chapter"><a href="(https://mangakatana\.com/manga/{own}/c[^"]+)">([^<]+)</a>',
+                                      page):
+            number = _chapter_number(html.unescape(label))
+            if number is not None:
+                found[path] = Chapter(number, NO_VOLUME, path)
+        alt = re.search(r'<div class="alt_name">([^<]*)</div>', page)
+        status = re.search(r'<div class="d-cell-small value status [^"]*">([^<]+)<', page)
+        genres = re.search(r'<div class="genres">(.*?)</div>', page, re.S)
+        desc = re.search(r'<div class="summary">(.*?)</div>', page, re.S)
+        cover = re.search(r'<meta property="og:image" content="([^"]+)"', page)
+        info = MangaInfo(
+            title=html.unescape(title.group(1)).strip() if title else self.slug.rsplit(".", 1)[0].replace("-", " ").title(),
+            chapters=sorted(found.values(), key=lambda c: c.number),
+            status=status.group(1).strip() if status else "",
+            genres=[html.unescape(g) for g in re.findall(r">([^<]+)</a>", genres.group(1))] if genres else [],
+            description=_plain(re.sub(r'<div class="label">[^<]*</div>', "", desc.group(1))) if desc else "",
+            author=", ".join(html.unescape(a) for a in re.findall(r'<a class="author"[^>]*>([^<]+)<', page)),
+            aliases=[html.unescape(n).strip() for n in alt.group(1).split(";") if n.strip()] if alt else [],
+        )
+        if with_cover and cover:
+            info.cover = self.cover(self._jpg(cover.group(1)))
+        return info
+
+    def info(self, with_cover: bool = True) -> MangaInfo:
+        return self._parse(self._get(self.title_url).text, with_cover)
+
+    @classmethod
+    def search(cls, query: str, limiter: RateLimiter, page_no: int = 1,
+               filters: SearchFilters | None = None, sort: str = "") -> tuple[list[SearchResult], int]:
+        site = cls("", limiter)
+        where = f"https://mangakatana.com/page/{page_no}" if page_no > 1 else "https://mangakatana.com/"
+        resp = site._get(where + "?" + urlencode({"search": query.strip(), "search_by": "book_name"}))
+        if cls.url_re.search(resp.url):  # a single match goes straight to its page
+            one = cls(resp.url, limiter)
+            info = one._parse(resp.text, with_cover=False)
+            cover = re.search(r'<meta property="og:image" content="([^"]+)"', resp.text)
+            last = info.chapters[-1] if info.chapters else None
+            return [SearchResult(info.title, one.title_url, cls._jpg(cover.group(1)) if cover else "", info.status,
+                                 f"Ch. {fmt_num(last.number)}" if last else "", info.author, info.genres,
+                                 info.description, site=cls.name, aliases=info.aliases)], 1
+        page = resp.text
+        results = []
+        for item in re.split(r'<div class="item"', page)[1:]:
+            link = re.search(r'<h3 class="title">\s*<a href="(https://mangakatana\.com/manga/[^"]+)"[^>]*>([^<]+)</a>', item)
+            if not link:
+                continue
+            cover = re.search(r'<img (?:lazy-)?src="([^"]+)"', item)
+            status = re.search(r'<div class="status [^"]*">(?:<i[^>]*></i>)?\s*([^<]+)<', item)
+            latest = re.search(r'<div class="chapter"><a [^>]*>([^<:]+)', item)
+            genres = re.search(r'<div class="genres[^"]*">(.*?)</div>', item, re.S)
+            desc = re.search(r'<div class="summary[^"]*">(.*?)</div>', item, re.S)
+            results.append(SearchResult(
+                title=html.unescape(link.group(2)).strip(),
+                url=link.group(1),
+                cover_url=cls._jpg(cover.group(1)) if cover else "",
+                status=status.group(1).strip() if status else "",
+                latest=html.unescape(latest.group(1)).strip().replace("Chapter ", "Ch. ") if latest else "",
+                genres=[html.unescape(g) for g in re.findall(r">([^<]+)</a>", genres.group(1))] if genres else [],
+                description=_plain(desc.group(1)) if desc else "",
+                site=cls.name,
+            ))
+        more = f"/page/{page_no + 1}?" in page
+        return results, page_no + 1 if more else page_no
+
+    @classmethod
+    def lookup(cls, name: str, limiter: RateLimiter) -> list[SearchResult]:
+        """Its search only looks at the main title unless asked to look at the other names."""
+        found = cls.search(name, limiter)[0]
+        site = cls("", limiter)
+        resp = site._get("https://mangakatana.com/?" + urlencode({"search": name.strip(), "search_by": "alt_name"}))
+        if cls.url_re.search(resp.url):
+            one = cls(resp.url, limiter)
+            info = one._parse(resp.text, with_cover=False)
+            found.append(SearchResult(info.title, one.title_url, author=info.author, site=cls.name,
+                                      aliases=info.aliases))
+        return found
+
+    def page_urls(self, chapter: Chapter) -> list[str]:
+        page = self._get(chapter.url).text
+        lists = [re.findall(r"'(https?://[^']+)'", body) for body in re.findall(r"var \w+\s*=\s*\[([^\]]*)\]", page)]
+        urls = max(lists, key=len, default=[])  # one array is a decoy with a single picture
+        if not urls:
+            raise SiteError(f"No pages found for chapter {fmt_num(chapter.number)}")
+        return urls
+
+
+SITES = [FanFox, MangaDex, WeebCentral, MangaKatana]
 
 
 def site_for(url: str):
@@ -628,6 +846,8 @@ class AllSites:
             return False
         if not filters:
             return True
+        if not getattr(site_cls, "genres", None):
+            return False  # it can't filter at all
         return set(filters.genres) <= set(getattr(site_cls, "genres", [])) and \
             (not filters.kind or filters.kind in getattr(site_cls, "kinds", []))
 
@@ -728,11 +948,23 @@ class Multi:
         return self.sites[0].image_size(url)
 
 
+def _volume_between(at: tuple[float, int], volumes: dict[tuple[float, int], int]) -> int:
+    """A volume for a chapter that site didn't have, from its neighbours there: inside a volume, it's
+    that one; between two, the later one if it starts with this chapter's number (29 before 29.5)."""
+    before = max((k for k in volumes if k < at), default=None)
+    after = min((k for k in volumes if k > at), default=None)
+    if before is None or after is None:
+        return NO_VOLUME  # before the first or past the last: no way to tell
+    if volumes[before] == volumes[after] or int(after[0]) != int(at[0]):
+        return volumes[before]
+    return volumes[after]
+
+
 def _best_match(site_cls, queries: list[str], author: str, limiter: RateLimiter) -> str:
     """The page of the title going by one of these names on a site, from its first page of search results."""
     names = {_norm(q) for q in queries}
     for query in queries[:3]:
-        results, _ = site_cls.search(query, limiter)
+        results = site_cls.lookup(query, limiter)
         same = [r for r in results if names & {_norm(n) for n in [r.title, *r.aliases]}]
         if same:
             return next((r for r in same if _same_author(author, r.author)), same[0]).url
@@ -800,18 +1032,28 @@ def open_title(urls: list[str], limiter: RateLimiter, title: str = "", key: str 
     ranked = sorted(found.values(), key=lambda si: (-max(c.number for c in si[1].chapters) if si[1].chapters else 0,
                                                     -len(si[1].chapters), SITES.index(type(si[0]))))
     # Matched by number, and by how many times it came before: some titles start over each season.
+    # The others only add whole chapters the best site lacks, and newer ones: sites number extras
+    # differently (25.1 on one is 25.6 on another), and taking them all would get them twice.
+    last = max(c.number for c in ranked[0][1].chapters)
     chapters: dict[tuple[float, int], list[Chapter]] = {}
-    for site, info in ranked:
+    volumes: dict[str, dict[tuple[float, int], int]] = {}
+    for rank, (site, info) in enumerate(ranked):
         seen: dict[float, int] = {}
         for c in info.chapters:
             seen[c.number] = seen.get(c.number, -1) + 1
-            chapters.setdefault((c.number, seen[c.number]), []).append(dataclasses.replace(c, source=site.name, alts=[]))
+            at = (c.number, seen[c.number])
+            if c.volume != NO_VOLUME:
+                volumes.setdefault(site.name, {})[at] = c.volume
+            if rank and at not in chapters and c.number != int(c.number) and c.number < last:
+                continue
+            chapters.setdefault(at, []).append(dataclasses.replace(c, source=site.name, alts=[]))
+    # Volume numbers from one site only (the best if it has them, else the one with the most), so a
+    # volume isn't stitched together from sites that split them differently.
+    by_volume = volumes.get(ranked[0][0].name) or max(volumes.values(), key=len, default={})
     merged = []
     for at in sorted(chapters):
         best, *alts = chapters[at]
-        volume = best.volume if best.volume != NO_VOLUME else next(
-            (c.volume for c in alts if c.volume != NO_VOLUME), NO_VOLUME)
-        merged.append(dataclasses.replace(best, volume=volume, alts=alts))
+        merged.append(dataclasses.replace(best, volume=by_volume.get(at, _volume_between(at, by_volume)), alts=alts))
 
     in_order = [info for _, info in sorted(found.values(), key=lambda si: SITES.index(type(si[0])))]
     first = lambda attr: next((getattr(i, attr) for i in in_order if getattr(i, attr)), None)
