@@ -3315,7 +3315,7 @@ class LibraryPage(QWidget):
         pct = History.percent(entry)
         w["bar"].setValue(int(pct * 1000))
         w["bar"].setFormat(f"{pct * 100:.0f}%")
-        parts = [f"{len(entry.get('downloaded', {}))} of {entry.get('total_chapters', '?')} chapters"]
+        parts = [f"{History.have(entry)} of {entry.get('total_chapters', '?')} chapters"]
         if entry.get("failed"):
             parts.append(f"{len(entry['failed'])} failed")
         if entry.get("pending"):

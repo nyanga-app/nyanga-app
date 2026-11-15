@@ -110,9 +110,17 @@ class History:
         return next((f for f in self.by_chapter(key) if not self.finished(reads.get(str(f), {}))), None)
 
     @staticmethod
+    def have(entry: dict) -> int:
+        """Downloaded chapters the sites still list: extras only an old site had don't count, so it never
+        says "97 of 90"."""
+        listed = set(entry.get("listed") or entry.get("known", []))
+        downloaded = entry.get("downloaded", {})
+        return len(listed & set(downloaded)) if listed else len(downloaded)
+
+    @staticmethod
     def percent(entry: dict) -> float:
         total = entry.get("total_chapters") or 0
-        return min(1.0, len(entry.get("downloaded", {})) / total) if total else 0.0
+        return min(1.0, History.have(entry) / total) if total else 0.0
 
     # ---- writing
 
@@ -141,7 +149,7 @@ class History:
     def mark_seen(self, key: str, chapters: list[str]) -> None:
         """The user has now seen these chapters, so they no longer count as new."""
         entry = self.data[key]
-        entry["known"] = chapters
+        entry["known"] = entry["listed"] = chapters
         entry["new_chapters"] = 0
         self.save()
 
@@ -201,7 +209,7 @@ class History:
         entry = self.data[key]
         known = set(entry.get("known", []))
         new = len([c for c in chapters if c not in known]) if known else 0
-        entry.update(total_chapters=total, status=status, new_chapters=new, last_check=time.time())
+        entry.update(total_chapters=total, status=status, new_chapters=new, last_check=time.time(), listed=chapters)
         self.save()
         return new
 
