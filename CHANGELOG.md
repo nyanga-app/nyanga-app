@@ -2,6 +2,11 @@
 
 Written by the release workflow from the commit messages. Each version is a [GitHub Release](https://github.com/nyanga-app/nyanga-app/releases) with its installer.
 
+## [1.20.0](https://github.com/nyanga-app/nyanga-app/releases/tag/v1.20.0) (2026-11-15)
+
+### New
+- nyanga now searches every site at once and takes each chapter from whichever site has it
+
 ## [1.19.0](https://github.com/nyanga-app/nyanga-app/releases/tag/v1.19.0) (2026-10-31)
 
 ### New
