@@ -1154,22 +1154,51 @@ def estimate_chapter_bytes(site, chapters: list[Chapter], samples: int = 3, per_
 
     For each sampled chapter it reads the page list and the sizes of a few pages spread through
     it, then scales up by the page count. About samples * (1 + per_chapter) small requests.
+    Sites that don't say how big a page is (MangaKatana) are skipped for the next site with that
+    chapter; if none says, one page is downloaded to measure it.
     """
     if not chapters:
         return None
     picks = sorted({round(i * (len(chapters) - 1) / max(1, samples - 1)) for i in range(samples)})
+
+    def measure(chapter: Chapter):
+        """(bytes per page, pages) from the first site that gives sizes, else (None, (site, urls))."""
+        fallback = None  # a site's page list, to measure by downloading if no site gives sizes
+        for src, ch in site.sources_for(chapter):
+            try:
+                urls = src.page_urls(ch)
+                fallback = fallback or (src, urls)
+                spread = sorted({round(k * (len(urls) - 1) / max(1, per_chapter - 1))
+                                 for k in range(min(per_chapter, len(urls)))})
+                first = src.image_size(urls[spread[0]])
+                if not first:
+                    continue
+                sizes = [first] + [n for n in (src.image_size(urls[k]) for k in spread[1:]) if n]
+            except (SiteError, IndexError):
+                continue
+            return sum(sizes) / len(sizes), len(urls)
+        return None, fallback
+
+    done = [r for r in _parallel([lambda c=chapters[i]: measure(c) for i in picks]) if isinstance(r, tuple)]
+    per_page = [p for p, _ in done if p]
+    if not per_page:  # no site said how big its pages are: download one page to see
+        for _, fallback in done:
+            if fallback and fallback[1]:
+                src, urls = fallback
+                try:
+                    per_page = [len(src.image(urls[len(urls) // 2]))]
+                    break
+                except SiteError:
+                    continue
+    if not per_page:
+        return None
+    page = sum(per_page) / len(per_page)
     totals = []
-    for i in picks:
-        try:
-            src, ch = site.sources_for(chapters[i])[0]
-            urls = src.page_urls(ch)
-            spread = sorted({round(k * (len(urls) - 1) / max(1, per_chapter - 1))
-                             for k in range(min(per_chapter, len(urls)))})
-            sizes = [n for n in (src.image_size(urls[k]) for k in spread) if n]
-        except SiteError:
-            continue
-        if sizes:
-            totals.append(sum(sizes) / len(sizes) * len(urls))
+    for p, rest in done:
+        if p:
+            totals.append(p * rest)
+        elif rest and rest[1]:  # pages known, sizes not: use the size measured elsewhere
+            totals.append(page * len(rest[1]))
     return sum(totals) / len(totals) if totals else None
 
 
