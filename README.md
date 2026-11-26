@@ -60,7 +60,7 @@
 - 🗂️ **A Library**: every manga you've downloaded, how much of the series you have, and a "new"
   badge when chapters come out. Search it and sort it by name, last read or new chapters.
 - 📖 **A reader built in**: read your downloads right in Nyanga, and it remembers the page you
-  stopped on.
+  stopped on. **Continue reading** at the top of the Library takes you back there in one tap.
 - 📱 **Send to your phone**: scan a QR code with your phone's camera and save the files straight
   from its browser, over your home Wi‑Fi. Nothing to install on the phone.
 - 🌙 **Light and dark**, or follow your system.
@@ -224,6 +224,10 @@ Each one gets a card with its cover, how much of the series you have (chapters d
 of all chapters on the sites), and what failed or is still waiting. Once you have more than a
 couple, a search box and sort chips (**Recent**, **Last read**, **New chapters**, **A–Z**) sit at the
 top; the sort is remembered.
+
+**Continue reading**, at the top, shows the three manga you read in Nyanga most recently, with the
+file and page you stopped on. Tap one to carry on from there. Once you've finished a file it
+offers the next one, and a manga you've read to the end drops off the row.
 
 - **Read** asks which file, then opens it in Nyanga's own reader (CBZ, PDF, EPUB or an image
   folder). It starts where you left off. Turn pages with the arrow keys, the mouse wheel or by

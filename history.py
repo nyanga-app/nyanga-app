@@ -109,6 +109,22 @@ class History:
         reads = self.reads(key)
         return next((f for f in self.by_chapter(key) if not self.finished(reads.get(str(f), {}))), None)
 
+    def resume(self, key: str) -> tuple[Path, int, float] | None:
+        """Where to carry on reading in the app: the file read here last and its page, or the next
+        unfinished file after it (page 0) once that one's finished, with when it was read. None
+        if nothing was read here yet, or everything after it is finished."""
+        done = [(Path(f), r) for f, r in self.reads(key).items() if r.get("read") and Path(f).exists()]
+        if not done:
+            return None
+        path, r = max(done, key=lambda fr: fr[1]["read"])
+        if not self.finished(r):
+            return path, r.get("page", 0), r["read"]
+        files, reads = self.by_chapter(key), self.reads(key)
+        after = files[files.index(path) + 1:] if path in files else []
+        nxt = next((f for f in after if not self.finished(reads.get(str(f), {}))), None)
+        return (nxt, reads.get(str(nxt), {}).get("page", 0) if reads.get(str(nxt), {}).get("read") else 0,
+                r["read"]) if nxt else None
+
     @staticmethod
     def have(entry: dict) -> int:
         """Downloaded chapters the sites still list: extras only an old site had don't count, so it never

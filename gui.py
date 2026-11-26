@@ -3153,6 +3153,18 @@ class LibraryPage(QWidget):
         self.no_match.hide()
         self.col.addWidget(self.no_match)
 
+        # Continue reading: the manga read here last, a tap away from the page you stopped on.
+        self.resume_box = QWidget()
+        rb = QVBoxLayout(self.resume_box)
+        rb.setContentsMargins(0, 4, 0, 4)
+        rb.setSpacing(10)
+        rb.addWidget(label("Continue reading ✦", "h2"))
+        self.resume_row = QHBoxLayout()
+        self.resume_row.setSpacing(14)
+        rb.addLayout(self.resume_row)
+        self.resume_box.hide()
+        self.col.addWidget(self.resume_box)
+
         self.empty, el = card()
         erow = QHBoxLayout()
         erow.addStretch(1)
@@ -3194,6 +3206,7 @@ class LibraryPage(QWidget):
         for key, entry in entries:
             self.list.addWidget(self._card(key, entry))
         self._arrange()
+        self._fill_resume()
         self._check_for_new(entries)
 
     def _set_sort(self, kind: str) -> None:
@@ -3366,11 +3379,65 @@ class LibraryPage(QWidget):
             QMessageBox.information(self, "Not there", f"None of the files from {folder.name} are in {chosen} ✿\n\n"
                                     "Pick the folder that has the files themselves in it.")
 
+    RESUME = 3  # tiles in the Continue reading row
+
+    def _fill_resume(self) -> None:
+        """The Continue reading row: the manga read here most recently that still have pages to go."""
+        while self.resume_row.count():
+            w = self.resume_row.takeAt(0).widget()
+            if w:
+                w.deleteLater()
+        spots = [(key, entry, *spot) for key, entry in self.history.entries()
+                 if (spot := self.history.resume(key))]
+        spots.sort(key=lambda s: s[4], reverse=True)
+        for key, entry, path, page, when in spots[:self.RESUME]:
+            self.resume_row.addWidget(self._resume_tile(key, entry, path, page, when))
+        self.resume_row.addStretch(1)
+        self.resume_box.setVisible(bool(spots))
+
+    def _resume_tile(self, key: str, entry: dict, path: Path, page: int, when: float) -> QFrame:
+        frame, layout = card()
+        frame.setFixedWidth(290)
+        frame.setCursor(Qt.PointingHandCursor)
+        layout.setContentsMargins(14, 12, 16, 12)
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        cover = QLabel()
+        cover.setFixedSize(52, 74)
+        art = self.history.cover_path(key)
+        cover.setPixmap(rounded_pixmap(art.read_bytes() if art.exists() else None, 52, 74, 8))
+        row.addWidget(cover, 0, Qt.AlignTop)
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        title = entry.get("title", key)
+        name = label("", "pickName")
+        font = QFont(name.font())  # as the stylesheet will draw it (pickName), which isn't applied yet
+        font.setPixelSize(14)
+        font.setWeight(QFont.DemiBold)
+        name.setText(QFontMetrics(font).elidedText(title, Qt.ElideRight, 186))
+        name.setToolTip(title)
+        col.addWidget(name)
+        file = Path(short_name(path, title)).stem if path.is_file() else path.name
+        pages = self.history.reads(key).get(str(path), {}).get("pages", 0)
+        where = f"page {page + 1} of {pages}" if page and pages else "from the start"
+        col.addWidget(label(f"{file}  ·  {where}", "meta"))
+        col.addWidget(label(f"Read {ago(when)}", "hint"))
+        col.addStretch(1)
+        row.addLayout(col, 1)
+        layout.addLayout(row)
+        frame.setToolTip(f"Carry on reading {file} ✦")
+        Tap(frame, lambda: self._open_reader(key, path))
+        return frame
+
     def _read(self, key: str) -> None:
         path = PickFile.ask(self, self.history, key, "Read")
         if not path:
             self._fill(key)  # files may have been marked finished
+            self._fill_resume()
             return
+        self._open_reader(key, path)
+
+    def _open_reader(self, key: str, path: Path) -> None:
         if not path.exists():
             self.refresh()  # moved or deleted since
             return
@@ -3382,9 +3449,11 @@ class LibraryPage(QWidget):
             QMessageBox.warning(self, "Couldn't read it", f"{path.name} couldn't be opened ✿\n\n{e}")
             return
         book.closed.connect(self._fill)
+        book.closed.connect(lambda _: self._fill_resume())
         book.show()
         self.history.log_read(key, path, book.page, len(book.book))
         self._fill(key)
+        self._fill_resume()
 
     def _open_file(self, key: str) -> None:
         path = PickFile.ask(self, self.history, key, "Open")
