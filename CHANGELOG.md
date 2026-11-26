@@ -2,6 +2,11 @@
 
 Written by the release workflow from the commit messages. Each version is a [GitHub Release](https://github.com/nyanga-app/nyanga-app/releases) with its installer.
 
+## [1.24.2](https://github.com/nyanga-app/nyanga-app/releases/tag/v1.24.2) (2026-11-26)
+
+### Fixes
+- a manga that fanfox removed is found again when the other sites know it by another name
+
 ## [1.24.1](https://github.com/nyanga-app/nyanga-app/releases/tag/v1.24.1) (2026-11-22)
 
 ### Fixes
