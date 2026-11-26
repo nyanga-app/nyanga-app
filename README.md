@@ -58,7 +58,8 @@
 - ⚡ **Fast but polite**: several files at once, with one shared speed limit so the site isn't flooded.
 - 💾 **Picks up where it stopped**: cancel, close, come back later; finished files are skipped.
 - 🗂️ **A Library**: every manga you've downloaded, how much of the series you have, and a "new"
-  badge when chapters come out. Search it and sort it by name, last read or new chapters.
+  badge when chapters come out. Search it and sort it by name, last read or new chapters, and let
+  new chapters download by themselves (Settings → Downloads).
 - 📖 **A reader built in**: read your downloads right in Nyanga, and it remembers the page you
   stopped on. **Continue reading** at the top of the Library takes you back there in one tap.
 - 📱 **Send to your phone**: scan a QR code with your phone's camera and save the files straight
@@ -248,6 +249,7 @@ offers the next one, and a manga you've read to the end drops off the row.
   marked, so you can pick more.
 - Opening the page checks each manga for new chapters (at most once every 5 minutes) and shows
   a "new" badge. **Check for new chapters** at the top checks them all again whenever you like.
+- New chapters can download by themselves: see **New chapters** under Settings → Downloads.
 - If you delete a downloaded file (or move it out of its folder), it no longer counts as
   downloaded and can be downloaded again.
 - If a whole folder goes missing (renamed, moved, or on a drive that isn't plugged in), its files
@@ -280,6 +282,12 @@ computer need to be on the same Wi‑Fi; nothing goes through the internet.
 It's split into tabs, and a tab with unsaved changes gets a little ✦.
 
 - **Downloads**: the download folder, the format and chapters per file.
+  **New chapters** makes them download by themselves while Nyanga is open: for every manga in
+  your library, every manga except the ones you tick, or only the ones you tick (off until you
+  pick one). Nyanga looks every 3 hours and whenever you open the Library, and saves them like
+  your last download of that manga: same format, folder and chapters per file. A little card says
+  when they start downloading and when they're ready. Only chapters after the last one you have
+  are fetched, so gaps you left on purpose stay that way.
 - **Look & reading**: theme (light, dark, or match your system; the moon/sun button in the
   sidebar switches too), how many files the Download page lists at once, and which way the
   reader turns pages.

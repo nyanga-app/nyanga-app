@@ -51,6 +51,16 @@ class History:
     def in_library(self, key: str) -> bool:
         return self.data.get(key, {}).get("in_library", True) if key in self.data else False
 
+    def newer(self, key: str) -> list[str]:
+        """Chapters the sites list past the last one downloaded: what downloading new chapters by
+        themselves fetches (gaps left on purpose stay gaps)."""
+        entry = self.data.get(key, {})
+        have = [float(c) for c in entry.get("downloaded", {})]
+        if not have:
+            return []
+        last = max(have)
+        return [c for c in entry.get("listed") or entry.get("known", []) if float(c) > last]
+
     def files(self, key: str) -> list[Path]:
         """Downloaded files of a manga that are still there."""
         found = {Path(f) for f in self.data.get(key, {}).get("downloaded", {}).values()}

@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 import zipfile
-from dataclasses import asdict, dataclass, fields, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import date, datetime
 from pathlib import Path
 
@@ -106,6 +106,18 @@ class Settings:
     sent_to_phone: bool = False  # anything sent to a phone yet (until then it mentions the Windows firewall prompt)
     read_rtl: bool = False  # the reader turns pages right to left, like a printed manga
     library_sort: str = "recent"  # how the Library orders its cards: a key of LibraryPage.SORTS
+    new_chapters: str = "off"  # which manga download new chapters by themselves: a key of NEW_CHAPTERS
+    new_except: list[str] = field(default_factory=list)  # history keys left out with "except"
+    new_only: list[str] = field(default_factory=list)  # history keys that get them with "only"
+
+    NEW_CHAPTERS = {"off": "Off, I'll download them myself", "all": "Every manga in my library",
+                    "except": "Every manga except the ones I tick", "only": "Only the ones I tick"}
+
+    def gets_new(self, key: str) -> bool:
+        """Whether this manga downloads its new chapters by itself."""
+        mode = self.new_chapters
+        return mode == "all" or (mode == "except" and key not in self.new_except) or \
+            (mode == "only" and key in self.new_only)
 
     @staticmethod
     def path() -> Path:
@@ -724,6 +736,7 @@ def group_keys(group: core.Group) -> list[str]:
 class DownloadPage(QWidget):
     completed = Signal(str, int, str)  # title, number of files, folder
     progress = Signal(str, float)  # history key, how far the download is (0 to 1), or -1 once it stops
+    new_started = Signal(str, int)  # after open_manga(..., "new"): key, new chapters downloading (0: none, -1: couldn't)
     COVER_WIDTHS = (150, 280)  # the open title's cover grows with the window between these
 
     def __init__(self, settings: Settings, history: History):
@@ -733,6 +746,7 @@ class DownloadPage(QWidget):
         self.key = ""  # history key of the loaded title
         self.new_keys: set[str] = set()  # chapters that appeared since the title was last opened
         self._after_fetch = None  # what to do once a title opened from the library has loaded
+        self.busy_elsewhere = lambda key: False  # is this manga downloading on another page? (set by MainWindow)
         self.bridge = Bridge()
         self.bridge.searched.connect(self._on_searched)
         self.bridge.search_failed.connect(self._on_search_failed)
@@ -1415,6 +1429,9 @@ class DownloadPage(QWidget):
         self.lookup_card.hide()
 
     def _on_fetch_failed(self, message: str) -> None:
+        if self._after_fetch == self._get_new:
+            self.new_started.emit(self.key or "", -1)
+        self._after_fetch = None
         self._end_lookup()
         self.fetch_btn.setEnabled(True)
         self._hint(message, error=True)
@@ -1519,8 +1536,11 @@ class DownloadPage(QWidget):
     # ---- opening from the library
 
     def open_manga(self, url: str, action: str = "open") -> None:
-        """Load a title; with action "continue" or "retry", also start downloading what's left or what failed."""
-        if action != "open":
+        """Load a title; with action "continue" or "retry", also start downloading what's left or what failed,
+        with "new" the chapters past the last one downloaded (answering through `new_started`)."""
+        if action == "new":
+            self._after_fetch = self._get_new
+        elif action != "open":
             self._after_fetch = lambda: self._resume(action == "retry")
         self._fetch([url])
 
@@ -1539,22 +1559,36 @@ class DownloadPage(QWidget):
         if self.per_file.value() == min(old.chapters_per_file, top):
             self.per_file.setValue(min(s.chapters_per_file, top))
 
-    def _resume(self, only_failed: bool) -> None:
-        entry = self.history.get(self.key) or {}
-        run = entry.get("last_run", {})
+    def _use_last_run(self) -> None:
+        """The format, chapters per file and folder of this manga's last download."""
+        run = (self.history.get(self.key) or {}).get("last_run", {})
         if run.get("format"):
             self.fmt.setCurrentIndex(max(0, self.fmt.findData(run["format"])))
-        if run.get("per_file") and self.per_file.isVisible():
+        if run.get("per_file") and not self.per_file.isHidden():
             self.per_file.setValue(run["per_file"])
         if run.get("save_to") and run["save_to"] != self.save_to.text():
             self.save_to.setText(run["save_to"])
             self._regroup()  # the files already made there decide the layout
+
+    def _resume(self, only_failed: bool) -> None:
+        entry = self.history.get(self.key) or {}
+        self._use_last_run()
         wanted = set(entry.get("failed" if only_failed else "pending", []))
         self._check(lambda i: bool(wanted & set(group_keys(self.groups[i]))))
         if self._checked_rows():
             self._start()
         else:
             self._status("Nothing left to download ♥")
+
+    def _get_new(self) -> None:
+        """Download the chapters past the last one downloaded, saved like the last download."""
+        new = set(self.history.newer(self.key)) & {chapter_key(c.number) for c in self.info.chapters}
+        if new:
+            self._use_last_run()
+            self._check(lambda i: bool(new & set(group_keys(self.groups[i]))))
+            if self._checked_rows():
+                self._start()
+        self.new_started.emit(self.key, (len(new) if self.running else -1) if new else 0)
 
     ABOUT_SHORT = 320  # characters of the description shown before "Read more"
 
@@ -2064,6 +2098,9 @@ class DownloadPage(QWidget):
         rows = self._checked_rows()
         if not rows or not self.site:
             return
+        if self.busy_elsewhere(self.key):
+            self._status("Nyanga is getting the new chapters of this one", "Give it a moment, then try again ✦")
+            return
         problem = folder_problem(self.save_to.text())
         if problem:
             self._status("That download folder won't work", problem)
@@ -2258,15 +2295,18 @@ class SettingsPage(QWidget):
 
     # The tabs: (name, icon, the settings each one holds, so a tab can show it has unsaved changes)
     TABS = [
-        ("Downloads", "download", ("download_dir", "default_format", "chapters_per_file")),
+        ("Downloads", "download", ("download_dir", "default_format", "chapters_per_file", "new_chapters",
+                                   "new_except", "new_only")),
         ("Look && reading", "book", ("theme", "files_per_page", "read_rtl")),
         ("Speed", "paw", ("workers", "download_mode", "request_delay", "temp_dir", "keep_temp")),
         ("App", "cat", ()),
     ]
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, history: History):
         super().__init__(objectName="page")
         self.settings = settings
+        self.history = history
+        self.new_picks = {"except": set(), "only": set()}  # ticked in the form, per mode
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -2313,6 +2353,27 @@ class SettingsPage(QWidget):
         form.addRow("Chapters per file", with_hint(self.per_file, "Used when a site has no volume numbers for a title."))
         fl.addLayout(form)
         downloads.addWidget(files)
+
+        news, nl = card()
+        nl.addWidget(label("New chapters ✦", "h2"))
+        form = form_layout()
+        self.new_mode = combo_box()
+        for key, name in Settings.NEW_CHAPTERS.items():
+            self.new_mode.addItem(name, key)
+        form.addRow("Download by themselves", with_hint(
+            self.new_mode, "While Nyanga is open, it looks every 3 hours (and when you open the Library) and "
+            "saves new chapters like your last download of that manga. Only chapters after the last one you "
+            "have, so gaps you left stay that way."))
+        self.new_form = form
+        self.new_hint = QLabel("Leave out")
+        box = QWidget()
+        self.new_list = QVBoxLayout(box)
+        self.new_list.setContentsMargins(0, 2, 0, 0)
+        self.new_list.setSpacing(6)
+        form.addRow(self.new_hint, box)
+        nl.addLayout(form)
+        self.new_mode.currentIndexChanged.connect(lambda _: self._fill_new_list())
+        downloads.addWidget(news)
 
         looks, ll = card()
         ll.addWidget(label("Look", "h2"))
@@ -2494,7 +2555,7 @@ class SettingsPage(QWidget):
         if self.rtl.currentData() == self.shown.read_rtl != self.settings.read_rtl:
             self.rtl.setCurrentIndex(self.rtl.findData(self.settings.read_rtl))
             self.shown.read_rtl = self.settings.read_rtl
-        self._update_dirty()
+        self._fill_new_list()  # manga may have come or gone
 
     def _check(self) -> None:
         self.check_btn.setEnabled(False)
@@ -2550,6 +2611,33 @@ class SettingsPage(QWidget):
         self.mode.setCurrentIndex(max(0, self.mode.findData(s.download_mode)))
         self.theme.setCurrentIndex(max(0, self.theme.findData(s.theme)))
         self.delay.setValue(s.request_delay)
+        self.new_picks = {"except": set(s.new_except), "only": set(s.new_only)}
+        self.new_mode.setCurrentIndex(max(0, self.new_mode.findData(s.new_chapters)))
+        self._fill_new_list()
+
+    def _fill_new_list(self) -> None:
+        """The library's manga as tick boxes, for "every manga except" and "only the ones I tick"."""
+        while self.new_list.count():
+            w = self.new_list.takeAt(0).widget()
+            if w:
+                w.deleteLater()
+        mode = self.new_mode.currentData()
+        entries = sorted(self.history.entries(), key=lambda ke: ke[1].get("title", "").casefold())
+        picking = mode in self.new_picks
+        self.new_form.setRowVisible(self.new_form.rowCount() - 1, picking)
+        if not picking:
+            self._update_dirty()
+            return
+        self.new_hint.setText("Leave out" if mode == "except" else "These get them")
+        if not entries:
+            self.new_list.addWidget(label("Your library is empty for now ✦", "hint"))
+        picks = self.new_picks[mode]
+        for key, entry in entries:
+            box = QCheckBox(entry.get("title", key), checked=key in picks)
+            box.setCursor(Qt.PointingHandCursor)
+            box.toggled.connect(lambda on, key=key: (picks.add(key) if on else picks.discard(key), self._update_dirty()))
+            self.new_list.addWidget(box)
+        self._update_dirty()
 
     def _form(self) -> Settings:
         """The settings as currently entered in the form; the rest (like the results look) stay as saved."""
@@ -2566,6 +2654,9 @@ class SettingsPage(QWidget):
             keep_temp=self.keep_temp.isChecked(),
             theme=self.theme.currentData(),
             read_rtl=self.rtl.currentData(),
+            new_chapters=self.new_mode.currentData(),
+            new_except=sorted(self.new_picks["except"]),
+            new_only=sorted(self.new_picks["only"]),
         )
 
     def _toast(self, text: str, error: bool = False) -> None:
@@ -3087,6 +3178,7 @@ class LibraryBridge(QObject):
 class LibraryPage(QWidget):
     """Every manga downloaded so far, how complete it is, and buttons to carry on."""
     open_requested = Signal(str, str)  # url, action: "open", "continue" or "retry"
+    new_wanted = Signal(str)  # a manga that downloads new chapters by itself has some to get
     SORTS = {"recent": ("Recent", "The manga you downloaded or opened last come first"),
              "read": ("Last read", "The manga you read last come first"),
              "new": ("New chapters", "Manga with chapters you haven't got yet come first"),
@@ -3582,6 +3674,13 @@ class LibraryPage(QWidget):
             self.found_new += self.history.checked(key, total, status, keys)
         self._set_checking(key, False)
         self._fill(key)
+        self._want_new(key)
+
+    def _want_new(self, key: str) -> None:
+        entry = self.history.get(key)
+        if entry and self.settings.gets_new(key) and self.history.in_library(key) and self.history.newer(key):
+            self.new_wanted.emit(key)
+
     def _on_check_failed(self, key: str) -> None:
         self.failed_checks += 1
         self._set_checking(key, False)
@@ -3669,6 +3768,16 @@ class Notification(QWidget):
         self._show("Yay, it's ready!", f"<b>{html.escape(title)}</b> is all downloaded! "
                    f"{files} {'file is' if files == 1 else 'files are'} waiting for you. Happy reading ✦",
                    update=False)
+        self.timer.start()
+
+    def tell(self, title: str, body: str, folder: str = "") -> None:
+        """Any short news (new chapters downloading or downloaded); never over the update card."""
+        if self.sticky and self.isVisible():
+            return
+        self.folder = folder
+        self._show(title, body, update=False)
+        self.open_btn.setVisible(bool(folder))
+        self._fit()
         self.timer.start()
 
     def offer_update(self, version: str) -> None:
@@ -4309,6 +4418,7 @@ class RoundPopups(QObject):
 
 class MainWindow(QWidget):
     UPDATE_CHECK_MS = 6 * 60 * 60 * 1000
+    NEW_CHECK_MS = 3 * 60 * 60 * 1000  # how often manga that get new chapters by themselves are checked
 
     def __init__(self):
         super().__init__(objectName="root")
@@ -4353,10 +4463,33 @@ class MainWindow(QWidget):
         self.history = History()
         self.download = DownloadPage(self.settings, self.history)
         self.library = LibraryPage(self.settings, self.history)
-        self.library.busy = lambda key: self.download.running and self.download.key == key
+        # New chapters of manga set to get them by themselves download on a second Download page
+        # that's never shown, one manga at a time, so everything the page knows (fitting chapters
+        # into the files you have, reusing pages) works the same.
+        self.fetcher = DownloadPage(self.settings, self.history)
+        self.fetcher.setParent(self)
+        self.fetcher.hide()
+        self.new_queue: list[str] = []
+        self.new_key = ""  # the manga the fetcher is busy with
+        self.new_count = 0
+        self.new_told = False
+        self.library.busy = lambda key: (self.download.running and self.download.key == key) or self.new_key == key
+        self.download.busy_elsewhere = lambda key: self.new_key == key
         self.download.progress.connect(self.library.show_progress)
+        self.download.progress.connect(lambda _, frac: frac < 0 and QTimer.singleShot(2000, self._next_new))
+        self.fetcher.progress.connect(self.library.show_progress)
+        self.fetcher.progress.connect(lambda _, frac: frac < 0 and QTimer.singleShot(0, self._new_stopped))
+        self.fetcher.new_started.connect(self._new_started)
+        self.fetcher.completed.connect(self._new_done)
+        self.library.new_wanted.connect(self._want_new)
+        # Look for new chapters a minute after opening, then every few hours (the Library page
+        # also looks whenever it's opened).
+        self.new_timer = QTimer(self, interval=self.NEW_CHECK_MS)
+        self.new_timer.timeout.connect(self._check_new)
+        self.new_timer.start()
+        QTimer.singleShot(60_000, self._check_new)
         self.library.open_requested.connect(self._open_from_library)
-        self.settings_page = SettingsPage(self.settings)
+        self.settings_page = SettingsPage(self.settings, self.history)
         self.settings_page.changed.connect(self._settings_saved)
         self.settings_page.check_updates.connect(lambda: self.check_updates(manual=True))
         self.settings_page.show_notes.connect(self._show_all_notes)
@@ -4499,6 +4632,8 @@ class MainWindow(QWidget):
     def _settings_saved(self, old: Settings) -> None:
         self.apply_theme(self.settings.theme)
         self.download.apply_defaults(old)
+        for key, _ in self.history.entries():  # chapters already waiting go as soon as it's turned on
+            self.library._want_new(key)
 
     def show_page(self, index: int) -> None:
         if self.stack.currentWidget() is self.settings_page and index != 2 and self.settings_page.dirty():
@@ -4512,8 +4647,66 @@ class MainWindow(QWidget):
         elif self.stack.currentWidget() is self.download:
             self.download.sync_library_btn()  # it may have been removed on the Library page
 
+    # ----------------------------------------------------------------------- new chapters by themselves
+
+    def _check_new(self) -> None:
+        if any(self.settings.gets_new(k) for k, _ in self.history.entries()):
+            self.library._check_for_new(self.history.entries())
+
+    def _want_new(self, key: str) -> None:
+        if key != self.new_key and key not in self.new_queue:
+            self.new_queue.append(key)
+        self._next_new()
+
+    def _next_new(self) -> None:
+        """Start on the next manga with new chapters, unless one is going or you're downloading."""
+        if self.new_key or self.download.running:
+            return
+        while self.new_queue:
+            key = self.new_queue.pop(0)
+            sources = self.history.sources(key)
+            if self.history.newer(key) and sources:
+                break
+        else:
+            return
+        logger.info("getting new chapters of %s by themselves", key)
+        self.new_key, self.new_count, self.new_told = key, 0, False
+        self.fetcher.open_manga(sources[0], "new")
+
+    def _title(self, key: str) -> str:
+        return html.escape((self.history.get(key) or {}).get("title", "a manga"))
+
+    def _new_started(self, _key: str, count: int) -> None:
+        key = self.new_key
+        if count > 0:
+            self.new_count = count
+            many = f"{count} new chapters" if count > 1 else "a new chapter"
+            self.notification.tell("New chapters ✦", f"Downloading {many} of <b>{self._title(key)}</b>…")
+            return
+        logger.info("new chapters of %s: %s", key, "nothing to get" if count == 0 else "couldn't start")
+        self.new_key = ""
+        QTimer.singleShot(0, self._next_new)
+
+    def _new_done(self, _title: str, _files: int, folder: str) -> None:
+        count, self.new_told = self.new_count, True
+        many = f"{count} new chapters" if count > 1 else "A new chapter"
+        self.notification.tell("Yay, new chapters!", f"{many} of <b>{self._title(self.new_key)}</b> "
+                               f"{'are' if count > 1 else 'is'} downloaded and waiting for you. Happy reading ✦", folder)
+
+    def _new_stopped(self) -> None:
+        """The fetcher's download ended, done or not."""
+        if not self.new_key:
+            return
+        if not self.new_told:
+            self.notification.tell("New chapters ✿", f"Some new chapters of <b>{self._title(self.new_key)}</b> "
+                                   "didn't download. Nyanga will try again at the next check ✦")
+        self.new_key = ""
+        self._next_new()
+
     def _open_from_library(self, url: str, action: str) -> None:
-        if self.download.running:
+        if self.new_key and self.history.find([url]) == self.new_key:
+            self.download._status("Nyanga is getting the new chapters of this one", "Give it a moment ✦")
+        elif self.download.running:
             self.download._status("A download is still running", "Wait for it to finish, then try again ✦")
         else:
             self.download.open_manga(url, action)
@@ -4646,6 +4839,7 @@ class MainWindow(QWidget):
     def closeEvent(self, event) -> None:
         # Let running workers stop after their current page instead of leaving half-written files.
         self.download.cancel.set()
+        self.fetcher.cancel.set()
         super().closeEvent(event)
 
 
