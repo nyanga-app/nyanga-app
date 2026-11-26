@@ -247,7 +247,7 @@ offers the next one, and a manga you've read to the end drops off the row.
 - Tap anywhere else on a card to load that manga on the Download page with what you already have
   marked, so you can pick more.
 - Opening the page checks each manga for new chapters (at most once every 5 minutes) and shows
-  a "new" badge.
+  a "new" badge. **Check for new chapters** at the top checks them all again whenever you like.
 - If you delete a downloaded file (or move it out of its folder), it no longer counts as
   downloaded and can be downloaded again.
 - If a whole folder goes missing (renamed, moved, or on a drive that isn't plugged in), its files

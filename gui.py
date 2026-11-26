@@ -3104,7 +3104,7 @@ class LibraryPage(QWidget):
         self.bridge.checked.connect(self._on_checked)
         self.bridge.sources_found.connect(lambda key, found, missing: self.history.get(key) and
                                           self.history.set_sources(key, found, missing))
-        self.bridge.check_failed.connect(lambda key: self._set_checking(key, False))
+        self.bridge.check_failed.connect(self._on_check_failed)
         self.bridge.checks_done.connect(self._on_checks_done)
 
         outer = QVBoxLayout(self)
@@ -3124,7 +3124,16 @@ class LibraryPage(QWidget):
         head.addWidget(self.check_cat)
         self.check_lbl = label("", "meta")
         head.addWidget(self.check_lbl)
+        head.addSpacing(6)
+        self.check_btn = set_icon(QPushButton(" Check for new chapters"), "refresh")
+        self.check_btn.setToolTip("Look on the sites for chapters that came out since the last check")
+        self.check_btn.clicked.connect(lambda: self._check_for_new(self.history.entries(), manual=True))
+        head.addWidget(self.check_btn)
         self.col.addLayout(head)
+        self.found_new = self.failed_checks = 0  # new chapters the check running now found, and titles it couldn't check
+        self.manual = False  # that check was asked for with the button
+        self.check_note = QTimer(self, singleShot=True, interval=6000)
+        self.check_note.timeout.connect(lambda: self.checking or self.check_lbl.setText(""))
 
         # Search and sort, once there's more than a couple of manga to look through.
         self.tools = QWidget()
@@ -3201,6 +3210,7 @@ class LibraryPage(QWidget):
         self.cards.clear()
         entries = self.history.entries()
         self.empty.setVisible(not entries)
+        self.check_btn.setVisible(bool(entries))
         self.empty_cat.start() if not entries else self.empty_cat.stop()
         self.tools.setVisible(len(entries) > 2)
         for key, entry in entries:
@@ -3537,12 +3547,15 @@ class LibraryPage(QWidget):
         if cat:
             cat.start() if on or key in self.downloading else cat.stop()  # a download keeps it going
 
-    def _check_for_new(self, entries: list[tuple[str, dict]]) -> None:
-        # Skip titles checked in the last few minutes, so flipping between pages doesn't hammer the site.
-        due = [(k, e) for k, e in entries if time.time() - e.get("last_check", 0) > 300 and e.get("url")]
+    def _check_for_new(self, entries: list[tuple[str, dict]], manual: bool = False) -> None:
+        # Skip titles checked in the last few minutes, so flipping between pages doesn't hammer the site;
+        # the button checks them all.
+        due = [(k, e) for k, e in entries if (manual or time.time() - e.get("last_check", 0) > 300) and e.get("url")]
         if self.checking or not due:
             return
-        self.checking = True
+        self.checking, self.manual, self.found_new, self.failed_checks = True, manual, 0, 0
+        self.check_note.stop()
+        self.check_btn.setEnabled(False)
         for key, _ in due:
             self._set_checking(key, True)
         self.check_cat.start()
@@ -3566,14 +3579,25 @@ class LibraryPage(QWidget):
 
     def _on_checked(self, key: str, total: int, status: str, keys: list) -> None:
         if self.history.get(key):
-            self.history.checked(key, total, status, keys)
+            self.found_new += self.history.checked(key, total, status, keys)
         self._set_checking(key, False)
         self._fill(key)
+    def _on_check_failed(self, key: str) -> None:
+        self.failed_checks += 1
+        self._set_checking(key, False)
 
     def _on_checks_done(self) -> None:
         self.checking = False
         self.check_cat.stop()
-        self.check_lbl.setText("")
+        self.check_btn.setEnabled(True)
+        n = self.found_new
+        if n:
+            self.check_lbl.setText(f"{n} new chapter{'s' if n > 1 else ''} ✦")
+        elif self.manual and self.failed_checks:
+            self.check_lbl.setText("Couldn't reach the sites, try again in a bit ✿")
+        else:
+            self.check_lbl.setText("No new chapters yet ✿" if self.manual else "")
+        self.check_note.start()
 
 
 class Notification(QWidget):
