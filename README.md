@@ -220,7 +220,8 @@ the original strips; use a reader with a continuous-scroll mode for those.
 **Library page**
 
 Press **Add to library** next to a manga's title to keep it here (downloading it adds it too),
-and **Remove from library** to take it off again.
+and **Remove from library** to take it off again. In the search results, the little **+** on each
+manga adds it without opening it (it turns into a ✓; press it again to take it off).
 Each one gets a card with its cover, how much of the series you have (chapters downloaded out
 of all chapters on the sites), and what failed or is still waiting. Once you have more than a
 couple, a search box and sort chips (**Recent**, **Last read**, **New chapters**, **A–Z**) sit at the

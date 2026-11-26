@@ -180,6 +180,9 @@ QProgressBar#libBar { color: $accent_soft; font-size: 12px; }
 QLabel#notifyTitle { font-size: 19px; font-weight: 700; color: $accent; }
 QLabel#notifyBody { font-size: 13px; color: $text; }
 QPushButton#notifyClose { background: transparent; padding: 5px; border-radius: 10px; }
+QPushButton#resultLib { background: $button; padding: 6px; border-radius: 12px; }
+QPushButton#resultLib:hover { background: $button_hover; }
+QPushButton#resultLib[inside="true"] { background: $card; border: 1px solid $border; }
 QPushButton#notifyClose:hover { background: $button; }
 QLabel#toastText { background: transparent; color: $accent_soft; font-size: 14px; font-weight: 600; }
 QFrame#toast[error="true"] QLabel#toastText { color: $error; }
@@ -287,6 +290,7 @@ _ICONS = {
     "undo": '<path d="M9 5.5L4.8 9.7 9 13.9" fill="none" stroke="COLOR" stroke-width="2.4" stroke-linecap="round" '
             'stroke-linejoin="round"/><path d="M5.5 9.7h8.3a5 5 0 0 1 0 10H10" fill="none" stroke="COLOR" '
             'stroke-width="2.4" stroke-linecap="round"/>',
+    "plus": '<path d="M12 5.5v13M5.5 12h13" stroke="COLOR" stroke-width="2.6" stroke-linecap="round"/>',
     "close": '<path d="M7 7l10 10M17 7L7 17" stroke="COLOR" stroke-width="2.6" stroke-linecap="round"/>',
     "refresh": '<path d="M19 12a7 7 0 1 1-2.05-4.95" fill="none" stroke="COLOR" stroke-width="2.4" '
                'stroke-linecap="round"/><path d="M19.2 4.5v3.6h-3.6" fill="none" stroke="COLOR" stroke-width="2.4" '

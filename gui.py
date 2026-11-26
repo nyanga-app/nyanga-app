@@ -149,6 +149,8 @@ class Bridge(QObject):
     about_missed = Signal(int, int)  # results-page token, result index whose page couldn't be read
     fetched = Signal(object, object)  # site, MangaInfo
     fetch_failed = Signal(str)
+    added = Signal(str, object, object)  # result url, site, MangaInfo: looked up to add straight to the library
+    add_failed = Signal(str, str)  # result url, message
     status = Signal(int, str, float, str, int)  # table row, state, fraction, message, bytes just downloaded
     finished = Signal(list, bool)  # failed rows, cancelled
     estimated = Signal(object, object)  # MangaInfo, average bytes per chapter (or None)
@@ -352,8 +354,10 @@ class CatDelegate(QStyledItemDelegate):
 
 
 class ResultItem(QFrame):
-    """One search result: cover, title and a line about it. Click to open it."""
+    """One search result: cover, title and a line about it. Click to open it; its little library
+    button adds it to the library without opening it."""
     clicked = Signal()
+    library_clicked = Signal()
 
     SIZES = ["Small", "Medium", "Big", "Large", "Very large"]
     LIST_WIDTHS = [40, 54, 72, 96, 124]  # cover width per size; covers are 54:76
@@ -383,7 +387,12 @@ class ResultItem(QFrame):
         lrow.addWidget(label("reading its page ✦", "meta"))
         lrow.addStretch(1)
         self.loading.hide()
+        self.lib_btn = set_icon(QPushButton(objectName="resultLib"), "plus", "accent_soft", 16)
+        self.lib_btn.setCursor(Qt.PointingHandCursor)
+        self.lib_btn.clicked.connect(self.library_clicked)
+        self.set_library("out")
         if grid:  # a tile: cover on top, title underneath
+            self.lib_btn.setParent(self)  # floats over the cover's top right corner (see resizeEvent)
             col = QVBoxLayout(self)
             col.setContentsMargins(10, 10, 10, 12)
             col.setSpacing(6)
@@ -418,7 +427,25 @@ class ResultItem(QFrame):
         text.addWidget(self.tags)
         text.addStretch(1)
         row.addLayout(text, 1)
+        row.addWidget(self.lib_btn, 0, Qt.AlignTop)
         self.set_about(result.genres, result.description, result.rating)
+
+    def set_library(self, state: str) -> None:
+        """"out" (not in the library), "in", or "busy" while it's being added."""
+        swap_icon(self.lib_btn, "check" if state == "in" else "plus")
+        self.lib_btn.setEnabled(state != "busy")
+        self.lib_btn.setProperty("inside", state == "in")
+        repolish(self.lib_btn)
+        self.lib_btn.setToolTip({"in": "In your library ✦ Click to take it off",
+                                 "busy": "Adding it to your library…"}.get(state, "Add to library ✦"))
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self.grid:
+            c = self.cover.geometry()
+            self.lib_btn.adjustSize()
+            self.lib_btn.move(c.right() - self.lib_btn.width() - 4, c.top() + 4)
+            self.lib_btn.raise_()
 
     def set_about(self, genres: list[str] | None, description: str, rating: float = 0.0) -> None:
         """Show the title's rating, its genres (as tags in the list) and its description when hovered."""
@@ -768,6 +795,9 @@ class DownloadPage(QWidget):
         self.cover_cache: dict[str, bytes | None] = {}
         self.about_cache: dict[str, tuple[list[str], str, float]] = {}  # title url -> genres, description, rating
         self.bridge.fetched.connect(self._on_fetched)
+        self.bridge.added.connect(self._on_added)
+        self.bridge.add_failed.connect(self._on_add_failed)
+        self.adding: set[str] = set()  # result urls being looked up to add to the library
         self.bridge.fetch_failed.connect(self._on_fetch_failed)
         self.bridge.status.connect(self._on_status)
         self.bridge.finished.connect(self._on_finished)
@@ -1298,6 +1328,8 @@ class DownloadPage(QWidget):
         for result in results:
             item = ResultItem(result, grid, size)
             item.clicked.connect(lambda r=result: self._pick(r))
+            item.library_clicked.connect(lambda r=result: self._result_library(r))
+            item.set_library(self._library_state(result))
             if result.cover_url in self.cover_cache:
                 item.set_cover(self.cover_cache[result.cover_url])
             if result.url in self.about_cache:
@@ -1387,6 +1419,62 @@ class DownloadPage(QWidget):
     def _on_about_missed(self, token: int, index: int) -> None:
         if token == self.cover_token and index < len(self.results):
             self.results[index].stop_loading()
+
+    def _library_state(self, result: core.SearchResult) -> str:
+        if result.url in self.adding:
+            return "busy"
+        key = self.history.find(result.urls or [result.url])
+        return "in" if key and self.history.in_library(key) else "out"
+
+    def _sync_result_buttons(self) -> None:
+        for item in self.results:
+            item.set_library(self._library_state(item.result))
+
+    def _result_library(self, result: core.SearchResult) -> None:
+        """A result's library button: add it without opening it (looked up in the background for its
+        chapter list), or take it off again."""
+        urls = result.urls or [result.url]
+        key = self.history.find(urls)
+        if key and self.history.in_library(key):
+            busy = self.running and self.key == key
+            if not busy:
+                remove_from_library(self, self.history, key, busy=False)
+            self.sync_library_btn()
+            return
+        self.adding.add(result.url)
+        self._sync_result_buttons()
+        entry = self.history.get(key) or {}
+        urls = list(dict.fromkeys([*urls, *self.history.sources(key)]))
+        limiter = core.RateLimiter(self.settings.request_delay)
+
+        def work() -> None:
+            try:
+                site, info = core.open_title(urls, limiter, entry.get("title", ""), key or "",
+                                             self.history.look_on(key) if key else None,
+                                             names=[result.title, *result.aliases])
+                if not info.chapters:
+                    raise core.SiteError("No chapters found on that page.")
+                self.bridge.added.emit(result.url, site, info)
+            except Exception as e:
+                logger.info("adding %s to the library failed", urls, exc_info=True)
+                self.bridge.add_failed.emit(result.url, str(e))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_added(self, url: str, site, info: core.MangaInfo) -> None:
+        self.adding.discard(url)
+        key = site.key
+        self.history.remember(key, site.title_url, info.title, len(info.chapters), info.status, info.cover)
+        self.history.set_sources(key, site.sources, site.missing)
+        self.history.mark_seen(key, [chapter_key(c.number) for c in info.chapters])
+        logger.info("added %s to the library from the search results", key)
+        self.sync_library_btn()
+        self._hint(f"Added {info.title} to your library ✦")
+
+    def _on_add_failed(self, url: str, message: str) -> None:
+        self.adding.discard(url)
+        self._sync_result_buttons()
+        self._hint(f"Couldn't add that one to your library: {message}", error=True)
 
     def _pick(self, result: core.SearchResult) -> None:
         if not self.running:
@@ -1532,6 +1620,7 @@ class DownloadPage(QWidget):
         self.lib_btn.setEnabled(not self.running)
         self.lib_btn.setToolTip("Take it off the Library page; your downloaded files stay where they are"
                                 if inside else "Keep it on the Library page; downloading adds it too")
+        self._sync_result_buttons()
 
     # ---- opening from the library
 
