@@ -962,15 +962,15 @@ def _volume_between(at: tuple[float, int], volumes: dict[tuple[float, int], int]
     return volumes[after]
 
 
-def _best_match(site_cls, queries: list[str], author: str, limiter: RateLimiter) -> str:
-    """The page of the title going by one of these names on a site, from its first page of search results."""
+def _best_match(site_cls, queries: list[str], author: str, limiter: RateLimiter) -> SearchResult | None:
+    """The title going by one of these names on a site, from its first page of search results."""
     names = {_norm(q) for q in queries}
     for query in queries[:3]:
         results = site_cls.lookup(query, limiter)
         same = [r for r in results if names & {_norm(n) for n in [r.title, *r.aliases]}]
         if same:
-            return next((r for r in same if _same_author(author, r.author)), same[0]).url
-    return ""
+            return next((r for r in same if _same_author(author, r.author)), same[0])
+    return None
 
 
 def open_title(urls: list[str], limiter: RateLimiter, title: str = "", key: str = "",
@@ -1011,22 +1011,40 @@ def open_title(urls: list[str], limiter: RateLimiter, title: str = "", key: str 
     author = next((info.author for _, info in found.values() if info.author), "")
     look = [n for n in look if n not in found]
     missing = []
-    if look and queries:
-        def search(site_cls) -> tuple[Site, MangaInfo] | None:
-            url = _best_match(site_cls, queries, author, limiter)
-            if not url or (site_cls.name in known and known[site_cls.name].key == key_for(url)):
-                return None  # not there, or only the page that just failed
-            site = site_cls(url, limiter)
-            return site, read(site)
+    # A site can know the title by more names than we searched with (MangaDex lists "Blue Box" for
+    # "Ao no Hako") even when it has no chapters to give, so sites that found nothing get a second
+    # search with the names the others matched.
+    more: dict[str, str] = {}
+
+    def search(site_cls, queries) -> tuple[Site, MangaInfo] | None:
+        hit = _best_match(site_cls, queries, author, limiter)
+        if hit:
+            more.update({_norm(n): n.strip() for n in [hit.title, *hit.aliases] if n.strip().isascii() and _norm(n)})
+        if not hit or (site_cls.name in known and known[site_cls.name].key == key_for(hit.url)):
+            return None  # not there, or only the page that just failed
+        site = site_cls(hit.url, limiter)
+        return site, read(site)
+
+    for round_no in range(2):
+        if not look or not queries:
+            break
         clss = [site_named(n) for n in look]
-        for site_cls, got in zip(clss, _parallel([lambda c=c: search(c) for c in clss])):
+        look = []
+        for site_cls, got in zip(clss, _parallel([lambda c=c: search(c, queries) for c in clss])):
             if isinstance(got, Exception) and getattr(got, "status", 0) != 404:
                 log.info("looking for %s on %s failed: %s", queries[0], site_cls.name, got)  # try again later
             elif got and not isinstance(got, Exception):
                 log.info("found %s on %s: %s", queries[0], site_cls.name, got[0].title_url)
                 found[site_cls.name] = got
+            elif round_no == 0 and not got:
+                look.append(site_cls.name)
             else:
                 missing.append(site_cls.name)
+        known_names = {_norm(q) for q in queries}
+        queries = [q for k, q in more.items() if k not in known_names]
+        if not queries:
+            missing += look
+            break
     if not found:
         raise errors[0] if errors else SiteError("Couldn't find that title anywhere ✦")
 
