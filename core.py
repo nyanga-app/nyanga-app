@@ -18,7 +18,7 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from multiprocessing import Manager
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import requests
 
@@ -779,7 +779,119 @@ class MangaKatana(Site):
         return urls
 
 
-SITES = [FanFox, MangaDex, WeebCentral, MangaKatana]
+class MangaFreak(Site):
+    """mangafreak.me: plain HTML, often the first with a new chapter. Extras are lettered (16a, 16e),
+    read as 16.1, 16.5."""
+    name = "mangafreak.me"
+    home = "https://ww3.mangafreak.me/"
+    example = "https://ww3.mangafreak.me/Manga/<Title>"
+    url_re = re.compile(r"mangafreak\.\w+/Manga/([A-Za-z0-9_]+)", re.I)
+    base = "https://ww3.mangafreak.me"  # it moves between ww1, ww2, ww3...; follows the redirect
+    referer = image_referer = base + "/"
+    _user_agent = WeebCentral._user_agent
+
+    def __init__(self, url: str, limiter: RateLimiter):
+        super().__init__(limiter)
+        match = self.url_re.search(url)
+        self.slug = match.group(1) if match else ""
+
+    @property
+    def key(self) -> str:
+        return f"{self.name}:{self.slug.lower()}"
+
+    @property
+    def title_url(self) -> str:
+        return f"{self.base}/Manga/{self.slug}"
+
+    def _page(self, url: str) -> requests.Response:
+        resp = self._get(url)
+        moved = re.match(r"https?://[^/]+", resp.url)
+        if moved and moved.group(0) != MangaFreak.base and "mangafreak" in moved.group(0):
+            MangaFreak.base = moved.group(0)
+        return resp
+
+    @staticmethod
+    def _number(label: str) -> float | None:
+        m = re.search(r"(\d+)([a-z])?\s*$", label.strip(), re.I)
+        if not m:
+            return _chapter_number(label)
+        extra = (ord(m.group(2).lower()) - 96) / 10 if m.group(2) else 0
+        return float(int(m.group(1)) + min(extra, 0.9))
+
+    def info(self, with_cover: bool = True) -> MangaInfo:
+        page = self._page(self.title_url).text
+        title = re.search(r'<div class="manga_series_data">\s*<h1>([^<]+)</h1>', page)
+        found = {}
+        for path, label in re.findall(r'class="chapter-link" href="(/Read1_[^"]+)">([^<]+)<', page):
+            number = self._number(html.unescape(label))
+            if number is not None:
+                found[number] = Chapter(number, NO_VOLUME, self.base + path)
+        alt = re.search(r"<div>Alternative Title:([^<]*)</div>", page)
+        status = re.search(r"<div>This is ([^<]+?) series</div>", page)
+        genres = re.search(r'<div class="series_sub_genre_list">(.*?)</div>', page, re.S)
+        desc = re.search(r'<div class="manga_series_description">\s*<div>[^<]*</div>\s*<p>(.*?)</p>', page, re.S)
+        authors = dict.fromkeys(a.strip() for a in re.findall(r"<div>(?:Written|Illustrated) By:([^<]+)</div>", page))
+        cover = re.search(r'<div class="manga_series_image">\s*<img src="([^"]+)"', page)
+        info = MangaInfo(
+            title=html.unescape(title.group(1)).strip() if title else self.slug.replace("_", " "),
+            chapters=sorted(found.values(), key=lambda c: c.number),
+            status=status.group(1).replace("-", "").strip().title() if status else "",
+            genres=[html.unescape(g).strip() for g in re.findall(r">([^<]+)</a>", genres.group(1))] if genres else [],
+            description=_plain(desc.group(1)) if desc else "",
+            author=", ".join(html.unescape(a) for a in authors if a),
+            aliases=[html.unescape(n).strip() for n in alt.group(1).split(",") if n.strip()] if alt else [],
+        )
+        if with_cover and cover:
+            info.cover = self.cover(cover.group(1))
+        return info
+
+    @classmethod
+    def search(cls, query: str, limiter: RateLimiter, page_no: int = 1,
+               filters: SearchFilters | None = None, sort: str = "") -> tuple[list[SearchResult], int]:
+        site = cls("", limiter)
+        page = site._page(f"{cls.base}/Find/{quote(query.strip())}?page={page_no}").text
+        results = []
+        for item in re.split(r'<div class="manga_search_item">', page)[1:]:
+            link = re.search(r'<h3>\s*<a href="(/Manga/[^"]+)">([^<]+)</a>', item)
+            if not link:
+                continue
+            cover = re.search(r'<img src="([^"]+)"', item)
+            count = re.search(r"(\d+) Chapters? Published\.\s*\(([^)]+)\)", item)
+            results.append(SearchResult(
+                title=html.unescape(link.group(2)).strip(),
+                url=cls.base + link.group(1),
+                cover_url=cover.group(1) if cover else "",
+                status=count.group(2).strip() if count else "",
+                latest=f"Ch. {count.group(1)}" if count else "",
+                genres=[html.unescape(g).strip() for g in re.findall(r'href="/Genre/[^"]*">([^<]+)</a>', item)],
+                site=cls.name,
+            ))
+        more = f"page={page_no + 1}\"" in page
+        return results, page_no + 1 if more else page_no
+
+    @classmethod
+    def lookup(cls, name: str, limiter: RateLimiter) -> list[SearchResult]:
+        """Its search finds other names but lists only the main one, so read those off the first few pages."""
+        found = cls.search(name, limiter)[0]
+        if any(_norm(r.title) == _norm(name) for r in found):
+            return found
+        for r in found[:3]:
+            try:
+                info = cls(r.url, limiter).info(with_cover=False)
+            except SiteError:
+                continue
+            r.aliases, r.author = info.aliases, info.author
+        return found
+
+    def page_urls(self, chapter: Chapter) -> list[str]:
+        page = self._page(chapter.url).text
+        urls = list(dict.fromkeys(re.findall(r'<img[^>]+src="(https?://images\.mangafreak\.\w+/mangas/[^"]+)"', page)))
+        if not urls:
+            raise SiteError(f"No pages found for chapter {fmt_num(chapter.number)}")
+        return urls
+
+
+SITES = [FanFox, MangaDex, WeebCentral, MangaKatana, MangaFreak]
 
 
 def site_for(url: str):
