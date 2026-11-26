@@ -2,6 +2,14 @@
 
 Written by the release workflow from the commit messages. Each version is a [GitHub Release](https://github.com/nyanga-app/nyanga-app/releases) with its installer.
 
+## [1.25.0](https://github.com/nyanga-app/nyanga-app/releases/tag/v1.25.0) (2026-11-26)
+
+### New
+- library: a continue reading row at the top of the library takes you back to the page you stopped on
+- library: a check for new chapters button looks for new chapters whenever you like
+- settings: new chapters can now download by themselves, for every manga, all but a few, or only the ones you pick
+- search: each search result has a little + that adds it to your library without opening it
+
 ## [1.24.2](https://github.com/nyanga-app/nyanga-app/releases/tag/v1.24.2) (2026-11-26)
 
 ### Fixes
