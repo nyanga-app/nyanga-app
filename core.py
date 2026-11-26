@@ -1085,14 +1085,26 @@ def _best_match(site_cls, queries: list[str], author: str, limiter: RateLimiter)
     return None
 
 
+def _counted(chapters: list[Chapter]) -> list[tuple[Chapter, tuple[float, int]]]:
+    """Each chapter with (its number, how many chapters had that number before it)."""
+    seen: dict[float, int] = {}
+    out = []
+    for c in chapters:
+        seen[c.number] = seen.get(c.number, -1) + 1
+        out.append((c, (c.number, seen[c.number])))
+    return out
+
+
 def open_title(urls: list[str], limiter: RateLimiter, title: str = "", key: str = "",
                look_on: list[str] | None = None, with_cover: bool = True,
-               names: list[str] = ()) -> tuple[Multi, MangaInfo]:
+               names: list[str] = (), downloaded: list[str] = (), seen: list[str] = ()) -> tuple[Multi, MangaInfo]:
     """Read a title from every site we know it on and put the chapter lists together.
 
     `urls` are its known pages (at most one per site); `title` its name as it was saved, kept so
     file names don't change; `look_on` the sites to search by name for it (None: all the others),
-    by the names the sites give it plus `names` (e.g. from a search result).
+    by the names the sites give it plus `names` (e.g. from a search result). `downloaded` and `seen`
+    are chapter numbers (fmt_num) already in the user's files and in the list they last saw, so
+    extras keep the numbers they have there.
     A site whose page has gone (404) is searched again. The returned Multi has `sources`
     (where it is now) and `missing` (sites searched that don't have it)."""
     known = {}
@@ -1164,20 +1176,25 @@ def open_title(urls: list[str], limiter: RateLimiter, title: str = "", key: str 
     ranked = sorted(found.values(), key=lambda si: (-max(c.number for c in si[1].chapters) if si[1].chapters else 0,
                                                     -len(si[1].chapters), SITES.index(type(si[0]))))
     # Matched by number, and by how many times it came before: some titles start over each season.
-    # The others only add whole chapters the best site lacks, and newer ones: sites number extras
-    # differently (25.1 on one is 25.6 on another), and taking them all would get them twice.
-    last = max(c.number for c in ranked[0][1].chapters)
+    # Whole chapters come from every site. Extras are numbered differently (25.1 on one is 25.6 on
+    # another), so those after one chapter all come from one site, the one whose numbers are already
+    # in the user's files (then the list they last saw), else the best: whichever site ranks first,
+    # what's on disk keeps its numbers.
+    numbered = [(rank, site, c, at) for rank, (site, info) in enumerate(ranked) for c, at in _counted(info.chapters)]
+    extras: dict[tuple[int, int], dict[int, list[str]]] = {}  # after which chapter -> site rank -> numbers
+    for rank, _, c, at in numbered:
+        if c.number != int(c.number):
+            extras.setdefault((int(c.number), at[1]), {}).setdefault(rank, []).append(fmt_num(c.number))
+    have, saw = set(downloaded), set(seen)
+    pick = {group: min(by_site, key=lambda r: (-len(have.intersection(by_site[r])), -len(saw.intersection(by_site[r])), r))
+            for group, by_site in extras.items()}
     chapters: dict[tuple[float, int], list[Chapter]] = {}
     volumes: dict[str, dict[tuple[float, int], int]] = {}
-    for rank, (site, info) in enumerate(ranked):
-        seen: dict[float, int] = {}
-        for c in info.chapters:
-            seen[c.number] = seen.get(c.number, -1) + 1
-            at = (c.number, seen[c.number])
-            if c.volume != NO_VOLUME:
-                volumes.setdefault(site.name, {})[at] = c.volume
-            if rank and at not in chapters and c.number != int(c.number) and c.number < last:
-                continue
+    chosen = lambda rank, c, at: c.number == int(c.number) or pick[(int(c.number), at[1])] == rank
+    for rank, site, c, at in sorted(numbered, key=lambda n: not chosen(n[0], n[2], n[3])):
+        if c.volume != NO_VOLUME:
+            volumes.setdefault(site.name, {})[at] = c.volume
+        if chosen(rank, c, at) or at in chapters:  # another site's extra with the same number can stand in
             chapters.setdefault(at, []).append(dataclasses.replace(c, source=site.name, alts=[]))
     # Volume numbers from one site only (the best if it has them, else the one with the most), so a
     # volume isn't stitched together from sites that split them differently.

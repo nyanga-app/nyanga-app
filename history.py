@@ -80,6 +80,11 @@ class History:
         exact = next((k for k in wanted if k in self.data), None)  # its own entry first
         return exact or next((key for key in self.data if set(wanted) & set(map(core.key_for, self.sources(key)))), None)
 
+    def numbering(self, key: str | None) -> dict[str, list[str]]:
+        """The chapter numbers already in the files and in the list last seen, for `core.open_title`."""
+        entry = self.data.get(key or "", {})
+        return {"downloaded": list(entry.get("downloaded", {})), "seen": entry.get("listed") or entry.get("known", [])}
+
     def look_on(self, key: str) -> list[str]:
         """The sites worth searching for a title: those it isn't known on, unless they lacked it not long ago."""
         entry = self.data.get(key, {})

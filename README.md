@@ -73,7 +73,8 @@ link to the publisher's own site, and then their chapters come from the others),
 (`https://weebcentral.com/series/<id>/<title>`), **mangakatana.com**
 (`https://mangakatana.com/manga/<title>.<id>`) and **mangafreak.me**
 (`https://ww3.mangafreak.me/Manga/<Title>`, often the first with a new chapter). They're listed in
-**Settings → App**.
+**Settings → App**. Every manga uses all of them at once: each chapter comes from whichever site has
+it, and extras keep the numbers they already have in your files.
 
 ## 🐾 Meet the cats
 

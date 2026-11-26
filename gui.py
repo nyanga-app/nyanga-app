@@ -1451,7 +1451,7 @@ class DownloadPage(QWidget):
             try:
                 site, info = core.open_title(urls, limiter, entry.get("title", ""), key or "",
                                              self.history.look_on(key) if key else None,
-                                             names=[result.title, *result.aliases])
+                                             names=[result.title, *result.aliases], **self.history.numbering(key))
                 if not info.chapters:
                     raise core.SiteError("No chapters found on that page.")
                 self.bridge.added.emit(result.url, site, info)
@@ -1499,7 +1499,8 @@ class DownloadPage(QWidget):
         def work() -> None:
             try:
                 site, info = core.open_title(urls, limiter, entry.get("title", ""), key or "",
-                                             self.history.look_on(key) if key else None, names=names)
+                                             self.history.look_on(key) if key else None, names=names,
+                                             **self.history.numbering(key))
                 self.bridge.fetched.emit(site, info)
             except Exception as e:
                 logger.info("looking up %s failed", urls, exc_info=True)
@@ -3747,7 +3748,8 @@ class LibraryPage(QWidget):
             for key, entry in due:
                 try:
                     site, info = core.open_title(self.history.sources(key), limiter, entry.get("title", ""), key,
-                                                 self.history.look_on(key), with_cover=False)
+                                                 self.history.look_on(key), with_cover=False,
+                                                 **self.history.numbering(key))
                     keys = [chapter_key(c.number) for c in info.chapters]
                     self.bridge.sources_found.emit(key, site.sources, site.missing)
                     self.bridge.checked.emit(key, len(keys), info.status, keys)
