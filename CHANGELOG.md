@@ -2,6 +2,14 @@
 
 Written by the release workflow from the commit messages. Each version is a [GitHub Release](https://github.com/nyanga-app/nyanga-app/releases) with its installer.
 
+## [1.26.0](https://github.com/nyanga-app/nyanga-app/releases/tag/v1.26.0) (2026-11-26)
+
+### New
+- manga now also comes from mangafreak.me, which often has new chapters days before the other sites
+
+### Fixes
+- extras keep the numbers they already have in your files, whichever site has a manga's newest chapters
+
 ## [1.25.0](https://github.com/nyanga-app/nyanga-app/releases/tag/v1.25.0) (2026-11-26)
 
 ### New
